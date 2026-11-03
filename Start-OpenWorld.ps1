@@ -81,9 +81,9 @@ function Install-Prerequisite {
 }
 
 function Read-Health {
-    param([string]$Url)
-    try {
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "$Url/api/health" -TimeoutSec 2
+        param([string]$Url)
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri "$Url/api/health" -TimeoutSec 2
         return $response.Content | ConvertFrom-Json
     } catch [System.Net.WebException] {
         return $null
@@ -92,6 +92,7 @@ function Read-Health {
 
 $server = $null
 try {
+    Set-Location $Root
     if ($Port -lt 1 -or $Port -gt 65535) { throw 'Port must be between 1 and 65535.' }
     Write-Host 'Checking Python and Node.js...'
     $python = Find-NativePython
@@ -130,6 +131,30 @@ try {
     }
     Invoke-Checked -File $VenvPython -Arguments @('-m', 'pip', 'check')
     Set-Content -LiteralPath $pythonStamp -Value $requirementsHash -Encoding ASCII
+    $appProbe = @'
+import importlib.metadata
+import importlib.util
+import sys
+import tomllib
+from pathlib import Path
+root = Path.cwd()
+spec = importlib.util.find_spec('app')
+expected = (root / 'backend' / 'app' / '__init__.py').resolve()
+version = tomllib.loads((root / 'backend' / 'pyproject.toml').read_text())['project']['version']
+try:
+    installed = importlib.metadata.version('openworld')
+except importlib.metadata.PackageNotFoundError:
+    installed = None
+valid = spec is not None and spec.origin is not None and Path(spec.origin).resolve() == expected
+sys.exit(0 if valid and installed == version else 1)
+'@
+    $appProbe | & $VenvPython -
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'Installing the OpenWorld backend package...'
+        Invoke-Checked -File $VenvPython -Arguments @(
+            '-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps', '-e', $Backend
+        )
+    }
 
     Set-Location $Frontend
     $nodeStamp = Join-Path $Frontend 'node_modules\.openworld-package-lock'

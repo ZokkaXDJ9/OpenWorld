@@ -41,7 +41,7 @@ from .schemas import (
     WorldInput,
 )
 
-app = FastAPI(title="OpenWorld", version="0.1.0")
+app = FastAPI(title="OpenWorld", version="0.1.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(

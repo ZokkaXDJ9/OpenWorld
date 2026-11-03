@@ -112,7 +112,7 @@ export default function App() {
         <div className="breadcrumb"><span>OpenWorld</span><ChevronRight size={14} />
           <strong>{currentWorld && page !== 'worlds' && page !== 'settings' ? currentWorld.name : pageLabel}</strong>
         </div>
-        <div className="version-badge">v0.1.0</div>
+        <div className="version-badge">v0.1.1</div>
       </header>
       <div className="content">
         {(error || worlds.error || relevantError) && <div className="error-banner" role="alert">

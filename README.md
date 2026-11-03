@@ -22,6 +22,10 @@ Package Manager (`winget`) einzurichten. Dafür sind Internetzugang und gegebene
 die Bestätigung des Windows-Installers erforderlich. Ohne `winget` diese beiden
 Programme einmal selbst installieren. Beim ersten Start werden auch die
 Python-/npm-Abhängigkeiten heruntergeladen; spätere Starts verwenden die lokale Installation.
+Das Backend wird dabei als Python-Paket registriert, sodass auch die mitgelieferten
+Tests und Startwege unabhängig vom Aufrufverzeichnis funktionieren.
+Vor einem Update einen separat gestarteten Vite-Entwicklungsserver beenden:
+Windows kann dessen geladene native npm-Dateien während einer Neuinstallation sperren.
 Zum Beenden das Startfenster schließen oder **Ctrl+C** drücken.
 
 Die Veröffentlichung enthält **keine Datenbanken, persönlichen Welten, Chats,
