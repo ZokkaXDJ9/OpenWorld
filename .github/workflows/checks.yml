@@ -1,0 +1,37 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify one-click setup
+        shell: pwsh
+        run: .\Start-OpenWorld.ps1 -PrepareOnly
+      - name: Backend tests and lint
+        working-directory: backend
+        shell: pwsh
+        run: |
+          & ..\.venv\Scripts\python.exe -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ..\.venv\Scripts\python.exe -m ruff check app migrations tests
+      - name: Browser regressions
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:e2e
