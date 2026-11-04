@@ -35,6 +35,22 @@ def export(e):
     return response.json()
 
 
+def test_legacy_world_bundle_without_new_ux_fields_still_imports(eldoria, tmp_path):
+    e = eldoria
+    simulation = setup(e)
+    bundle = export(e)
+    for row in bundle["tables"]["event_settings"]:
+        row.pop("confirm_changes")
+        row.pop("automation_disabled")
+    for row in bundle["tables"]["simulations"]:
+        row.pop("recognize_events")
+    with target(tmp_path):
+        response = e["client"].post("/api/worlds/import", json=bundle)
+        assert response.status_code == 201, response.text
+        detail = e["client"].get("/api" + e["path"] + f"/simulations/{simulation['id']}").json()
+        assert detail["recognize_events"] is True
+
+
 def test_complete_world_roundtrip_keeps_stable_ids_and_excludes_provider_configuration(
     eldoria, tmp_path
 ):

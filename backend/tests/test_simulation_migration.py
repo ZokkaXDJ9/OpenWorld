@@ -67,3 +67,11 @@ def test_0005_preserves_every_original_column_and_row_of_populated_0004_database
         assert db.execute("SELECT character_id FROM conversation_participants").fetchall() == [
             (e["lumia"]["id"],)
         ]
+        assert db.execute("SELECT setup_state FROM provider_settings").fetchall() == [("{}",)]
+    migrate("downgrade", "0005")
+    with sqlite3.connect(database) as db:
+        assert "setup_state" not in [
+            r[1] for r in db.execute("PRAGMA table_info(provider_settings)")
+        ]
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    migrate("upgrade", "head")

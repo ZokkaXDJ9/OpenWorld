@@ -198,7 +198,7 @@ class ConnectionInput(StrictModel):
 
 
 class ProviderInput(ConnectionInput):
-    reasoning_profile: Literal["default", "openai", "llama_cpp", "lmstudio"] = "default"
+    reasoning_profile: Literal["default", "openai", "llama_cpp", "lmstudio", "ollama"] = "default"
     reasoning_mode: Literal["default", "off", "on", "low", "medium", "high"] = "default"
 
     @model_validator(mode="after")
@@ -208,6 +208,7 @@ class ProviderInput(ConnectionInput):
             "lmstudio": {"default", "off"},
             "llama_cpp": {"default", "off", "on"},
             "openai": {"default", "off", "low", "medium", "high"},
+            "ollama": {"default", "off", "on"},
         }
         if self.reasoning_mode not in allowed[self.reasoning_profile]:
             raise ValueError("Reasoning-Modus passt nicht zum gewählten Chat-Anbieterprofil")
@@ -244,3 +245,18 @@ class ExtractionProviderInput(ConnectionInput):
         if self.provider_profile == "lmstudio" and self.structured_output not in {"auto", "text"}:
             raise ValueError("LM Studio mit Reasoning-Steuerung nutzt natives JSON per Prompt")
         return self
+
+
+class ProviderDiscoveryInput(ProviderInput):
+    model: str = Field(default="", max_length=200)
+    kind: Literal["lmstudio", "ollama", "openai", "compatible"] = "compatible"
+    automatic: bool = False
+    allow_compatibility_retry: bool = False
+    manual_model: bool = False
+
+
+class SetupInput(StrictModel):
+    provider: ProviderInput
+    kind: Literal["lmstudio", "ollama", "openai", "compatible"]
+    configure_memories: bool = True
+    verification_token: str = Field(min_length=1, max_length=100)

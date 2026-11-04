@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .context import ContextTooLarge, build_context
@@ -39,6 +40,16 @@ from .models import (
 )
 from .portability import router as portability_router
 from .provider import OpenAIProvider, ProviderError, encrypt_key
+from .provider_setup import (
+    connection,
+    connection_status,
+    discover,
+    inventory,
+    local_servers,
+    memory_defaults,
+    verified_connection,
+    verify,
+)
 from .schemas import (
     CharacterInput,
     ConversationInput,
@@ -47,9 +58,11 @@ from .schemas import (
     KnowledgeInput,
     LocationInput,
     LocationTreeInput,
+    ProviderDiscoveryInput,
     ProviderInput,
     RelationshipInput,
     SendInput,
+    SetupInput,
     WorldInput,
 )
 from .serialization import encode
@@ -76,7 +89,7 @@ async def lifespan(app: FastAPI):
                 await task
 
 
-app = FastAPI(title="OpenWorld", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="OpenWorld", version="0.3.1", lifespan=lifespan)
 app.include_router(event_router)
 app.include_router(simulation_router)
 app.include_router(portability_router)
@@ -90,6 +103,7 @@ app.add_middleware(
 )
 app.state.provider = OpenAIProvider()
 app.state.active_conversations = set()
+app.state.connection_checks = {}
 log = logging.getLogger("openworld")
 DB = Annotated[Session, Depends(get_db)]
 
@@ -515,14 +529,22 @@ async def delete_resource(
 def settings(db: Session) -> ProviderSettings:
     row = db.get(ProviderSettings, 1)
     if row is None:
-        row = ProviderSettings(id=1)
-        db.add(row)
+        try:
+            with db.begin_nested():
+                row = ProviderSettings(id=1)
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            row = db.get(ProviderSettings, 1)
+            if row is None:
+                raise
         db.commit()
     return row
 
 
 def public_settings(row: ProviderSettings | ExtractionProviderSettings) -> dict:
     data = encode(row)
+    data.pop("setup_state", None)
     data["has_api_key"] = bool(data.pop("encrypted_key"))
     return data
 
@@ -535,12 +557,62 @@ def get_settings(db: DB):
 @app.put("/api/settings/provider")
 def put_settings(body: ProviderInput, db: DB):
     row = settings(db)
+    candidate = connection(body, row)
+    compatible_temperature = (
+        row.base_url == body.base_url
+        and row.model == body.model
+        and row.temperature == body.temperature
+        and (row.setup_state or {}).get("omit_temperature")
+    )
     for key, value in body.model_dump(exclude={"api_key", "clear_key"}).items():
         setattr(row, key, value)
-    if body.api_key:
-        row.encrypted_key = encrypt_key(body.api_key)
-    elif body.clear_key:
-        row.encrypted_key = ""
+    row.encrypted_key = candidate.encrypted_key
+    row.setup_state = {"omit_temperature": True} if compatible_temperature else {}
+    db.commit()
+    return public_settings(row)
+
+
+@app.post("/api/settings/provider/models")
+async def discover_models(body: ProviderDiscoveryInput, db: DB):
+    row = connection(body, settings(db))
+    if body.kind == "compatible":
+        return await discover(row)
+    result = await inventory(row, body.kind)
+    return {
+        "models": [item["id"] for item in result["models"]],
+        "details": result["models"],
+        "uncertainties": result["uncertainties"],
+    }
+
+
+@app.post("/api/settings/provider/test")
+async def check_provider(body: ProviderDiscoveryInput, request: Request, db: DB):
+    return await verify(body, settings(db), request.app.state.connection_checks)
+
+
+@app.get("/api/settings/provider/local")
+async def find_local_servers():
+    return await local_servers()
+
+
+@app.get("/api/settings/provider/status")
+async def provider_status(db: DB):
+    return await connection_status(settings(db))
+
+
+@app.post("/api/settings/setup")
+def finish_setup(body: SetupInput, request: Request, db: DB):
+    row = settings(db)
+    candidate = verified_connection(body, row, request.app.state.connection_checks)
+    for key in body.provider.model_dump(exclude={"api_key", "clear_key"}):
+        setattr(row, key, getattr(candidate, key))
+    row.encrypted_key = candidate.encrypted_key
+    row.setup_state = candidate.setup_state
+    if body.configure_memories:
+        memory = extraction_provider_settings(db)
+        recommended = memory_defaults(candidate, body.kind)
+        for key, value in recommended.model_dump(exclude={"api_key", "clear_key"}).items():
+            setattr(memory, key, value)
     db.commit()
     return public_settings(row)
 
@@ -667,7 +739,11 @@ def response_stream(
 ) -> StreamingResponse:
     provider_settings = settings(db)
     if not provider_settings.model:
-        raise HTTPException(422, "Bitte zuerst einen KI-Anbieter und ein Modell konfigurieren")
+        raise HTTPException(
+            422,
+            "Für Antworten fehlt noch ein KI-Modell. Öffne Einstellungen und wähle "
+            "„KI-Verbindung einrichten“. Der Assistent führt dich durch die Einrichtung.",
+        )
     try:
         context, token_count = build_context(
             db,
@@ -748,7 +824,11 @@ async def send_message(conversation_id: str, body: SendInput, request: Request, 
             409, "Mehrcharaktergespräch über die Gruppen-/Simulationssteuerung fortsetzen."
         )
     if not settings(db).model:
-        raise HTTPException(422, "Bitte zuerst einen KI-Anbieter und ein Modell konfigurieren")
+        raise HTTPException(
+            422,
+            "Für Antworten fehlt noch ein KI-Modell. Öffne Einstellungen und wähle "
+            "„KI-Verbindung einrichten“. Der Assistent führt dich durch die Einrichtung.",
+        )
     sequence = (
         db.scalar(
             select(Message.sequence)

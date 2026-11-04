@@ -9,7 +9,7 @@ export const statusLabels: Record<string, string> = {
   undone: 'Zurückgenommen', invalidated: 'Quelle geändert', recorded: 'Protokolliert',
   active: 'Aktuell', superseded: 'Überholt', revoked: 'Zurückgenommen', archived: 'Entfernt',
   pending: 'Wartet', running: 'Wird verarbeitet', failed: 'Fehlgeschlagen', complete: 'Abgeschlossen',
-  skipped: 'Smalltalk übersprungen',
+  skipped: 'Übersprungen',
 }
 const modeLabels = { auto: 'Automatisch', confirm: 'Bestätigung', protected: 'Geschützt' }
 const classes = { '*': 'Alle Objektklassen', knowledge: 'Wissen', character: 'Charakter',
@@ -22,6 +22,59 @@ function human(value: unknown): string {
     return Object.entries(value).map(([key, item]) => `${key}: ${human(item)}`).join(' · ')
   }
   return String(value)
+}
+
+export function MemoryOptions({ worldId, report, onSetup }: {
+  worldId: string; report: (error: string) => void; onSetup?: () => void
+}) {
+  const client = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const settings = useQuery({ queryKey: ['event-settings', worldId],
+    queryFn: () => api<EventSettings>(`/worlds/${worldId}/event-settings`) })
+  async function change(values: Partial<EventSettings>) {
+    if (!settings.data) return
+    const previous = settings.data
+    setBusy(true); report('')
+    client.setQueryData(['event-settings', worldId], { ...previous, ...values })
+    try {
+      const result = await api<EventSettings>(`/worlds/${worldId}/event-settings`, 'PUT', {
+        enabled: previous.enabled, revision: previous.revision,
+        confirm_changes: previous.confirm_changes,
+        automation_disabled: previous.automation_disabled, ...values,
+      })
+      client.setQueryData(['event-settings', worldId], result)
+    } catch (error) {
+      client.setQueryData(['event-settings', worldId], previous)
+      report(errorText(error))
+      await client.invalidateQueries({ queryKey: ['event-settings', worldId] })
+    }
+    finally { setBusy(false) }
+  }
+  return <section className="space-y-4" aria-label="Erinnerungen und Weltveränderungen">
+    <h2>Erinnerungen und Weltveränderungen</h2>
+    <p>OpenWorld kann wichtige Informationen aus Gesprächen speichern und Veränderungen
+      deiner Welt erkennen. Die Schutzregeln für Geheimnisse und Weltfakten bleiben erhalten.</p>
+    <p className="notice">Die Erkennung benötigt zusätzliche KI-Anfragen. Bei Online-Anbietern
+      können dadurch zusätzliche Kosten entstehen. Aktiviere sie nur, wenn du damit einverstanden bist.</p>
+    {settings.error && <p role="alert">{errorText(settings.error)}</p>}
+    <label className="checkbox"><input type="checkbox" disabled={busy || !settings.data}
+      checked={settings.data?.enabled ?? false} onChange={event => {
+        void change({ enabled: event.target.checked, automation_disabled: !event.target.checked,
+          ...(event.target.checked ? { confirm_changes: true } : {}) })
+      }} />Erinnerungen aus Gesprächen automatisch erkennen</label>
+    <label className="checkbox"><input type="checkbox" disabled={busy || !settings.data}
+      checked={settings.data?.confirm_changes ?? false} onChange={event => {
+        void change({ confirm_changes: event.target.checked })
+      }} />Wichtige Weltveränderungen vor dem Speichern bestätigen lassen</label>
+    <p className="muted text-sm">Auch ohne dieses Häkchen gelten bestehende Freigaben und
+      Schutzregeln weiter. Bestätigte Änderungen lassen sich nicht beliebig an späteren Folgen vorbei zurücknehmen.</p>
+    <button className="button" disabled={busy || !settings.data} onClick={() => {
+      void change({ enabled: false, automation_disabled: true })
+    }}>Automatische Erinnerungen und Ereignisse deaktivieren</button>
+    {settings.data?.automation_disabled && <p role="status">Automatische KI-Erinnerungen und
+      Weltänderungen sind für diese Welt ausgeschaltet – auch in Simulationen. Vorhandene Einträge bleiben erhalten.</p>}
+    {onSetup && <button className="button" onClick={onSetup}>KI einrichten</button>}
+  </section>
 }
 
 export function EventOptions({ worldId, report }: { worldId: string; report: (error: string) => void }) {
@@ -46,7 +99,7 @@ export function EventOptions({ worldId, report }: { worldId: string; report: (er
     } catch (error) { report(errorText(error)) }
     finally { setBusy(false) }
   }
-  return <details className="panel"><summary>Ereigniserkennung und Freigaben</summary>
+  return <details className="panel"><summary>Expertenmodus: Ereigniserkennung und Freigaben</summary>
     {(settings.error || rules.error) && <p role="alert">{errorText(settings.error ?? rules.error)}</p>}
     <label className="checkbox my-4"><input type="checkbox" checked={settings.data?.enabled ?? false}
       disabled={!settings.data || busy} onChange={async e => {
@@ -153,8 +206,8 @@ function ProposalEditor({ event, worldId, locations, saved, report }: {
   </div>
 }
 
-export function Events({ worldId, characters, locations, report }: {
-  worldId: string; characters: Entity[]; locations: Entity[]; report: (error: string) => void
+export function Events({ worldId, characters, locations, report, onSetup }: {
+  worldId: string; characters: Entity[]; locations: Entity[];   report: (error: string) => void; onSetup?: () => void
 }) {
   const client = useQueryClient()
   const [filters, setFilters] = useState({ status: '', character_id: '', location_id: '', event_type: '',
@@ -186,6 +239,7 @@ export function Events({ worldId, characters, locations, report }: {
     finally { setBusy(false) }
   }
   return <div className="space-y-5">
+    <div className="panel editor"><MemoryOptions worldId={worldId} report={report} onSetup={onSetup} /></div>
     <EventOptions worldId={worldId} report={report} />
     <section className="panel p-5 event-filters">
       <Field label="Status"><select value={filters.status} onChange={e => {
@@ -209,9 +263,11 @@ export function Events({ worldId, characters, locations, report }: {
     {jobs.data?.filter(job => job.status === 'failed' || job.attempts > 1 ||
       job.diagnostics.some(d => d.warning || (d.http_requests ?? 0) > 1)).map(job =>
       <div className={job.status === 'failed' ? 'error-banner' : 'notice'} key={job.id}>
-      <div><span>{job.status === 'failed' ? `Erkennung fehlgeschlagen: ${job.error}` :
+      <div><span>{job.status === 'failed' ? 'Erinnerungen und Weltveränderungen konnten nicht erkannt werden. Gespeicherte Gespräche bleiben erhalten.' :
         job.attempts > 1 ? 'Erkennung nach Wiederholung abgeschlossen' : 'Anbieterhinweis'}</span>
-        <details><summary>Diagnose · {job.attempts} / 3 Versuche</summary>
+        {job.status === 'failed' && onSetup && <button className="button small" onClick={onSetup}>KI einrichten</button>}
+        <details><summary>Expertenmodus: Diagnose · {job.attempts} / 3 Versuche</summary>
+          {job.error && <p>{job.error}</p>}
           {job.diagnostics.map((diagnosis, index) => <div key={index} className="my-2 text-sm">
             Versuch {diagnosis.attempt ?? index + 1}
             {diagnosis.trigger === 'automatic' ? ' (automatische Wiederholung)' : ''}:

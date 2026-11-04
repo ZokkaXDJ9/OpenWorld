@@ -56,7 +56,10 @@ def clock_for(db: Session, world_id: str) -> WorldClock:
 def generation_settings(db: Session, model: str = "") -> ProviderSettings:
     original = db.get(ProviderSettings, 1)
     if not original or not (model or original.model):
-        raise ProviderError("Bitte zuerst ein Chatmodell konfigurieren.")
+        raise ProviderError(
+            "Für Antworten fehlt noch ein KI-Modell. Öffne Einstellungen und wähle "
+            "„KI-Verbindung einrichten“. Der Assistent führt dich durch die Einrichtung."
+        )
     settings = ProviderSettings(
         **{
             column.key: getattr(original, column.key)
@@ -66,6 +69,8 @@ def generation_settings(db: Session, model: str = "") -> ProviderSettings:
     )
     if model:
         settings.model = model
+        if model != original.model:
+            settings.setup_state = {}
     return settings
 
 
@@ -176,6 +181,10 @@ def enqueue_witnesses(
     simulation_id: str | None = None,
 ) -> list[ExtractionJob]:
     jobs = []
+    if simulation_id:
+        simulation = db.get(Simulation, simulation_id)
+        if simulation and not simulation.recognize_events:
+            return jobs
     own_action = bool(
         re.search(
             r"\*|\d|\b(?:gebe|übergebe|verlasse|reise|betrete|erreiche|beginne|arrive|leave)\b",

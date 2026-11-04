@@ -15,6 +15,49 @@ def captured_requests():
     return requests
 
 
+@app.get("/v1/models")
+def models():
+    return {"data": [{"id": "mock-model"}]}
+
+
+@app.get("/api/v1/models")
+def lmstudio_models():
+    return {
+        "models": [
+            {
+                "type": "llm",
+                "key": "mock-model",
+                "display_name": "Testmodell",
+                "loaded_instances": [{"id": "mock-model", "config": {"context_length": 16384}}],
+                "capabilities": {"reasoning": {"allowed_options": ["off", "on"]}},
+            }
+        ]
+    }
+
+
+@app.get("/api/tags")
+@app.get("/api/ps")
+def ollama_models():
+    return {"models": [{"name": "mock-model", "context_length": 8192}]}
+
+
+@app.post("/api/show")
+def ollama_metadata():
+    return {"capabilities": ["completion", "thinking"]}
+
+
+@app.post("/api/chat")
+def ollama_completion(body: dict):
+    requests.append(body)
+    if not body.get("stream"):
+        return {"message": {"content": '{"events":[]}'}, "done": True}
+
+    async def stream():
+        yield json.dumps({"message": {"content": "Verbindung funktioniert."}, "done": True}) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+
 @app.post("/v1/chat/completions")
 async def completion(body: dict):
     requests.append(body)

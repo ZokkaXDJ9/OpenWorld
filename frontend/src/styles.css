@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+.setup-dialog { color: var(--text); background: var(--panel); width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow-y: auto; margin: auto; }
+.setup-dialog::backdrop { background: #000a; }
 .ensemble-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 20px; align-items: start; }
 .ensemble-transcript { max-height: 65vh; overflow-y: auto; overflow-wrap: anywhere; }
 .ensemble-message { border-top: 1px solid var(--border); padding: 18px 0; }

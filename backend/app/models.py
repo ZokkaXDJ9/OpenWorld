@@ -171,6 +171,7 @@ class Simulation(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"), unique=True
     )
     title: Mapped[str] = mapped_column(String(200))
+    recognize_events: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     status: Mapped[str] = mapped_column(String(20), default="created", index=True)
     max_rounds: Mapped[int] = mapped_column(Integer, default=20)
     completed_rounds: Mapped[int] = mapped_column(Integer, default=0)
@@ -429,6 +430,8 @@ class EventSettings(Base):
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    confirm_changes: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    automation_disabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class ProviderSettings(Base):
@@ -442,3 +445,4 @@ class ProviderSettings(Base):
     temperature: Mapped[float] = mapped_column(default=0.7)
     reasoning_profile: Mapped[str] = mapped_column(String(30), default="default")
     reasoning_mode: Mapped[str] = mapped_column(String(20), default="default")
+    setup_state: Mapped[dict] = mapped_column(JSON, default=dict)

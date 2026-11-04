@@ -222,6 +222,13 @@ def import_world(body: WorldBundle, db: DB):
         json.dumps(body.model_dump(), allow_nan=False)
         for name, rows in body.tables.items():
             table = TABLES[name]
+            if name == "event_settings":
+                for row in rows:
+                    row.setdefault("confirm_changes", False)
+                    row.setdefault("automation_disabled", False)
+            if name == "simulations":
+                for row in rows:
+                    row.setdefault("recognize_events", True)
             columns = set(table.columns.keys())
             if any(set(row) != columns for row in rows):
                 bad(f"Unbekannte oder fehlende Felder in {name}.")

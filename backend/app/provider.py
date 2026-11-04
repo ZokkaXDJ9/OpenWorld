@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 import httpx
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 
 from .db import DATA_DIR
 from .event_schemas import ExtractionOutput
@@ -19,6 +19,63 @@ class ProviderError(Exception):
         super().__init__(message)
         self.code = code
         self.diagnostics = diagnostics or {}
+
+
+def response_error(status: int, detail: str = "") -> ProviderError:
+    lowered = detail.lower()
+    diagnostics = {"http_status": status}
+    if status in {401, 403}:
+        return ProviderError(
+            "Der API-Schlüssel wurde abgelehnt. Prüfe Schlüssel und Modellberechtigung.",
+            code="authentication",
+            diagnostics=diagnostics,
+        )
+    if status == 429:
+        return ProviderError(
+            "Der Anbieter begrenzt die Anfragen oder das Guthaben reicht nicht aus. "
+            "Prüfe dein API-Guthaben oder versuche es später erneut.",
+            code="rate_limit",
+            diagnostics=diagnostics,
+        )
+    if status in {400, 422}:
+        for parameter in (
+            "reasoning_effort",
+            "chat_template_kwargs",
+            "think",
+            "temperature",
+            "max_completion_tokens",
+            "max_tokens",
+        ):
+            if parameter in lowered and any(
+                word in lowered
+                for word in (
+                    "unsupported",
+                    "not support",
+                    "unknown",
+                    "unrecognized",
+                    "not allowed",
+                )
+            ):
+                return ProviderError(
+                    "Das Modell unterstützt eine angeforderte Einstellung nicht.",
+                    code="unsupported_parameter",
+                    diagnostics={**diagnostics, "parameter": parameter},
+                )
+    if status == 404 or any(
+        word in lowered for word in ("not loaded", "no model", "model not found")
+    ):
+        return ProviderError(
+            "Das ausgewählte Modell ist nicht verfügbar. Lade es im KI-Programm und "
+            "wähle es in der Einrichtung erneut aus.",
+            code="model_unavailable",
+            diagnostics=diagnostics,
+        )
+    return ProviderError(
+        "Der KI-Server konnte die Anfrage nicht ausführen. Prüfe im KI-Programm, "
+        "ob das Chatmodell geladen und der Server aktiviert ist.",
+        code="server",
+        diagnostics=diagnostics,
+    )
 
 
 @dataclass(frozen=True)
@@ -49,15 +106,24 @@ def encrypt_key(key: str) -> str:
     return cipher().encrypt(key.encode()).decode()
 
 
+def decrypt_key(value: str) -> str:
+    try:
+        return cipher().decrypt(value.encode()).decode()
+    except (InvalidToken, ValueError) as exc:
+        raise ProviderError(
+            "Der gespeicherte API-Schlüssel kann nicht gelesen werden. "
+            "Öffne die KI-Einrichtung und gib den Schlüssel erneut ein.",
+            code="stored_key",
+        ) from exc
+
+
 class OpenAIProvider:
     async def extract(
         self, messages: list[dict[str, str]], settings: "ExtractionRuntime"
     ) -> ExtractionResponse:
         headers = {"Content-Type": "application/json"}
         if settings.encrypted_key:
-            headers["Authorization"] = (
-                "Bearer " + cipher().decrypt(settings.encrypted_key.encode()).decode()
-            )
+            headers["Authorization"] = "Bearer " + decrypt_key(settings.encrypted_key)
         profile = settings.provider_profile
         mode = settings.reasoning_mode
         schema = ExtractionOutput.model_json_schema()
@@ -120,6 +186,11 @@ class OpenAIProvider:
                 payload["think"] = False if mode == "off" else True if mode == "on" else mode
             if format_type != "text":
                 payload["format"] = schema if format_type == "json_schema" else "json"
+        if settings.omit_temperature:
+            if profile == "ollama":
+                payload["options"].pop("temperature", None)
+            else:
+                payload.pop("temperature", None)
         diagnostics = {
             "model": settings.model,
             "profile": profile,
@@ -234,9 +305,7 @@ class OpenAIProvider:
     ) -> AsyncIterator[str]:
         headers = {"Content-Type": "application/json"}
         if settings.encrypted_key:
-            headers["Authorization"] = (
-                "Bearer " + cipher().decrypt(settings.encrypted_key.encode()).decode()
-            )
+            headers["Authorization"] = "Bearer " + decrypt_key(settings.encrypted_key)
         payload = {
             "model": settings.model,
             "messages": messages,
@@ -257,21 +326,59 @@ class OpenAIProvider:
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": settings.reasoning_mode != "off"
                 }
+        url = f"{settings.base_url}/chat/completions"
+        native = settings.reasoning_profile == "ollama"
+        if native:
+            url = settings.base_url.removesuffix("/v1") + "/api/chat"
+            payload = {
+                "model": settings.model,
+                "messages": messages,
+                "stream": True,
+                "options": {
+                    "num_ctx": settings.context_window,
+                    "num_predict": settings.max_output_tokens,
+                    "temperature": settings.temperature,
+                },
+            }
+            if settings.reasoning_mode != "default":
+                payload["think"] = settings.reasoning_mode == "on"
+        if (settings.setup_state or {}).get("omit_temperature"):
+            if native:
+                payload["options"].pop("temperature", None)
+            else:
+                payload.pop("temperature", None)
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=15)) as client:
                 async with client.stream(
                     "POST",
-                    f"{settings.base_url}/chat/completions",
+                    url,
                     headers=headers,
                     json=payload,
                 ) as response:
                     if response.status_code != 200:
-                        raise ProviderError(
-                            f"KI-Anbieter antwortet mit HTTP {response.status_code}. "
-                            "Bitte URL, Modell und Zugangsdaten prüfen."
-                        )
+                        await response.aread()
+                        raise response_error(response.status_code, response.text[:2000])
                     finished = False
                     async for line in response.aiter_lines():
+                        if native:
+                            if not line.strip():
+                                continue
+                            try:
+                                packet = json.loads(line)
+                                if packet.get("error"):
+                                    raise response_error(400, str(packet["error"]))
+                                content = packet.get("message", {}).get("content", "")
+                                if not isinstance(content, str):
+                                    raise ProviderError("Die KI liefert ungültigen Antworttext.")
+                                if content:
+                                    yield content
+                                if packet.get("done") is True:
+                                    finished = True
+                            except (ValueError, AttributeError, TypeError) as exc:
+                                raise ProviderError(
+                                    "Die Antwort von Ollama ist unvollständig."
+                                ) from exc
+                            continue
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
@@ -297,8 +404,14 @@ class OpenAIProvider:
                                 "Ungültiges Streaming-Format des KI-Anbieters."
                             ) from exc
                     if not finished:
-                        raise ProviderError("KI-Stream wurde ohne Abschluss unterbrochen.")
+                        raise ProviderError(
+                            "Die Verbindung wurde während der Antwort unterbrochen. "
+                            "Prüfe den KI-Server und versuche es erneut.",
+                            code="connection",
+                        )
         except httpx.HTTPError as exc:
             raise ProviderError(
-                "KI-Anbieter nicht erreichbar oder Zeitlimit überschritten."
+                "Der KI-Server ist nicht erreichbar oder antwortet nicht rechtzeitig. "
+                "Starte dein KI-Programm und aktiviere dessen Server.",
+                code="connection",
             ) from exc

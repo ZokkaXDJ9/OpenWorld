@@ -70,7 +70,7 @@ export type ProviderSettings = {
   max_output_tokens: number
   temperature: number
   has_api_key: boolean
-  reasoning_profile: 'default' | 'openai' | 'llama_cpp' | 'lmstudio'
+  reasoning_profile: 'default' | 'openai' | 'llama_cpp' | 'lmstudio' | 'ollama'
   reasoning_mode: 'default' | 'off' | 'on' | 'low' | 'medium' | 'high'
 }
 export type ExtractionProviderSettings = Omit<ProviderSettings, 'reasoning_profile' | 'reasoning_mode'> & {
@@ -117,7 +117,9 @@ export type ExtractionJob = {
     finish_reason?: string | null; http_requests?: number; error?: string; warning?: string
     reason?: string }[]
 }
-export type EventSettings = { enabled: boolean; revision: number }
+export type EventSettings = {
+  enabled: boolean; revision: number; confirm_changes: boolean; automation_disabled: boolean
+}
 export type EventRule = {
   id: string; event_type: string; object_class: string
   mode: 'auto' | 'confirm' | 'protected'; revision: number

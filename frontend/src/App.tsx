@@ -11,9 +11,10 @@ import { Events } from './Events'
 import { LocationTree } from './LocationTree'
 import { moveLocations } from './locationStructure'
 import { Settings } from './Settings'
+import { ConnectionSetup } from './ConnectionSetup'
 import { Ensemble } from './Ensemble'
 import { WorldTransfer } from './WorldTransfer'
-import type { Entity, ExtractionJob, KnowledgeKind, Resource } from './types'
+import type { Entity, ExtractionJob, KnowledgeKind, ProviderSettings, Resource } from './types'
 import { Empty } from './ui'
 
 const RelationshipGraph = lazy(() => import('./RelationshipGraph').then(module =>
@@ -44,6 +45,12 @@ function useEntities(worldId: string, resource: Resource) {
 export default function App() {
   const client = useQueryClient()
   const [page, setPage] = useState<Page>('worlds')
+  const [setupOpen, setSetupOpen] = useState(false)
+  const provider = useQuery({ queryKey: ['provider'],
+    queryFn: () => api<ProviderSettings>('/settings/provider') })
+  const providerStatus = useQuery({ queryKey: ['provider-status'],
+    queryFn: () => api<{ state: string; message: string }>('/settings/provider/status'),
+    retry: false, refetchOnWindowFocus: false })
   const [worldId, setWorldId] = useState(localStorage.getItem('openworld-world') ?? '')
   const [editor, setEditor] = useState<{ resource: Resource; item?: Entity } | null>(null)
   const [error, setError] = useState('')
@@ -129,9 +136,20 @@ export default function App() {
         <div className="breadcrumb"><span>OpenWorld</span><ChevronRight size={14} />
           <strong>{currentWorld && page !== 'worlds' && page !== 'settings' ? currentWorld.name : pageLabel}</strong>
         </div>
-        <div className="version-badge">v0.3.0</div>
+        <div className="version-badge">v0.3.1</div>
       </header>
       <div className="content">
+        {(['chats', 'groups', 'simulations'].includes(page) || (page === 'worlds' &&
+          (providerStatus.data?.state !== 'ready' || !provider.data?.model))) &&
+          <section className="panel p-5 mb-5 space-y-3" aria-label="KI-Verbindung">
+            {provider.error ? <p role="alert">{errorText(provider.error)}</p> :
+              !provider.data ? <p>KI-Verbindung wird geladen …</p> :
+                <p>{providerStatus.data?.message ?? (provider.data.model ? `KI-Modell: ${provider.data.model}` :
+                  'Für Gespräche und Simulationen benötigst du eine KI-Verbindung. Wir helfen dir bei der Einrichtung.')}</p>}
+            {providerStatus.error && <p role="alert">{errorText(providerStatus.error)}</p>}
+            <button className="button" disabled={!provider.data} onClick={() => setSetupOpen(true)}>
+              KI einrichten</button>
+          </section>}
         {(error || worlds.error || relevantError || jobs.error) && <div className="error-banner" role="alert">
           <span>{error || errorText(worlds.error ?? relevantError ?? jobs.error)}</span>
           <button className="icon-button" aria-label="Fehler schliessen" onClick={() => setError('')}><X size={17} /></button>
@@ -253,7 +271,8 @@ export default function App() {
               text="Weltfakten oder persönliches Wissen über „Neuer Wissenseintrag“ anlegen." />}
           </section>}
           {currentWorld && page === 'events' && <Events key={worldId} worldId={worldId}
-            characters={characters.data ?? []} locations={locations.data ?? []} report={setError} />}
+            characters={characters.data ?? []} locations={locations.data ?? []} report={setError}
+            onSetup={() => setSetupOpen(true)} />}
           {currentWorld && page === 'chats' && <Chat key={worldId} worldId={worldId}
             characters={characters.data ?? []} report={setError} onEvents={() => navigate('events')} />}
           {currentWorld && (page === 'simulations' || page === 'groups') && <Ensemble
@@ -263,7 +282,8 @@ export default function App() {
           {page === 'worlds' && <WorldTransfer report={setError} />}
           {currentWorld && page === 'locations' && <div className="mt-5">
             <WorldTransfer worldId={worldId} report={setError} /></div>}
-          {page === 'settings' && <Settings report={setError} />}
+          {page === 'settings' && <Settings report={setError} worldId={currentWorld?.id}
+            onSetup={() => setSetupOpen(true)} />}
           {!currentWorld && page !== 'worlds' && page !== 'settings' && <Empty title="Wähle zuerst eine Welt."
             text="Öffne eine vorhandene Welt unter Meine Welten oder erstelle eine neue." />}
         </>}
@@ -271,5 +291,8 @@ export default function App() {
           <ArrowLeft size={14} /> Alle Welten</button>}
       </div>
     </main>
+    {setupOpen && provider.data && <ConnectionSetup initial={provider.data} close={() => {
+      setSetupOpen(false); setError('')
+    }} />}
   </div>
 }

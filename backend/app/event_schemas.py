@@ -176,3 +176,5 @@ class RuleInput(StrictModel):
 class EventSettingsInput(StrictModel):
     enabled: bool
     revision: int = Field(ge=1)
+    confirm_changes: bool | None = None
+    automation_disabled: bool | None = None

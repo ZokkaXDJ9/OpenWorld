@@ -35,6 +35,7 @@ from .models import (
     EventParticipant,
     EventProposal,
     EventRule,
+    EventSettings,
     EventSource,
     EventTarget,
     ExtractionJob,
@@ -454,6 +455,15 @@ def decide_mode(db: Session, world_id: str, body: EventInput, message: Message |
                 and operation.content not in message.content
             )
             and mode == "auto"
+        ):
+            mode = "confirm"
+        options = db.get(EventSettings, world_id)
+        if (
+            message
+            and options
+            and options.confirm_changes
+            and mode == "auto"
+            and not isinstance(operation, KnowledgeOperation)
         ):
             mode = "confirm"
         modes.append(mode)

@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Save, Server } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, errorText } from './api'
 import type { ExtractionProviderSettings, ProviderSettings } from './types'
 import { Field } from './ui'
+import { MemoryOptions } from './Events'
 
-export function Settings({ report }: { report: (text: string) => void }) {
+export function Settings({ report, onSetup, worldId }: {
+  report: (text: string) => void; onSetup: () => void; worldId?: string
+}) {
   const client = useQueryClient()
   const query = useQuery({
     queryKey: ['provider'], queryFn: () => api<ProviderSettings>('/settings/provider'),
@@ -15,6 +18,7 @@ export function Settings({ report }: { report: (text: string) => void }) {
   const [clearKey, setClearKey] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  useEffect(() => { setDraft(null); setKey(''); setClearKey(false) }, [query.data])
   const value = draft ?? query.data
   if (query.error) return <p role="alert" className="error-text">{errorText(query.error)}</p>
   if (!value) return <p className="muted">Einstellungen werden geladen ...</p>
@@ -22,7 +26,17 @@ export function Settings({ report }: { report: (text: string) => void }) {
     if (value) setDraft({ ...value, ...change })
     setSaved(false)
   }
-  return <div className="space-y-5"><form className="panel editor space-y-5 max-w-3xl" onSubmit={async e => {
+  return <div className="space-y-5">
+    <section className="panel editor space-y-4 max-w-3xl">
+      <h2>KI-Verbindung</h2>
+      <p>{value.model ? `Gewähltes Modell: ${value.model}` :
+        'Für Antworten deiner Charaktere fehlt noch eine KI-Verbindung. Wir richten sie Schritt für Schritt zusammen ein.'}</p>
+      <button className="button primary" onClick={onSetup}>KI-Verbindung einrichten</button>
+      <p className="muted">Du wählst dein KI-Programm, wir suchen die Modelle und testen gemeinsam
+        eine Antwort. Die Welt- und Charaktereditoren funktionieren auch ohne KI.</p>
+    </section>
+    <details className="panel editor max-w-3xl"><summary>Erweitert: Verbindung manuell bearbeiten</summary>
+    <form className="space-y-5 mt-5" onSubmit={async e => {
     e.preventDefault(); setBusy(true); report('')
     try {
       const result = await api<ProviderSettings>('/settings/provider', 'PUT', {
@@ -70,13 +84,14 @@ export function Settings({ report }: { report: (text: string) => void }) {
         <option value="default">Unverändert / Anbietervorgabe</option>
         <option value="lmstudio">LM Studio (reasoning_effort)</option>
         <option value="openai">OpenAI (reasoning_effort)</option>
+        <option value="ollama">Ollama (native API)</option>
         <option value="llama_cpp">llama.cpp / vLLM (enable_thinking)</option>
       </select></Field>
       <Field label="Reasoning im Chat"><select value={value.reasoning_mode}
         onChange={e => patch({ reasoning_mode: e.target.value as ProviderSettings['reasoning_mode'] })}>
         <option value="default">Anbietervorgabe</option>
         {value.reasoning_profile !== 'default' && <option value="off">Aus</option>}
-        {value.reasoning_profile === 'llama_cpp' && <option value="on">An</option>}
+        {['llama_cpp', 'ollama'].includes(value.reasoning_profile) && <option value="on">An</option>}
         {value.reasoning_profile === 'openai' && <>
           <option value="low">Gering</option><option value="medium">Mittel</option><option value="high">Hoch</option>
         </>}
@@ -97,7 +112,17 @@ export function Settings({ report }: { report: (text: string) => void }) {
     {saved && <p role="status" className="success">Einstellungen gespeichert. Die Verbindung wird beim nächsten Chat geprüft.</p>}
     <div className="notice">Lokale Einzelbenutzer-Version: API nur auf dem eigenen Rechner betreiben.
       Benutzerkonten und abgesicherter Serverbetrieb folgen in Phase 4.</div>
-  </form><ExtractionSettings report={report} /></div>
+  </form></details><section className="panel editor space-y-4 max-w-3xl">
+    {worldId ? <MemoryOptions worldId={worldId} report={report} onSetup={onSetup} /> : <>
+      <h2>Erinnerungen und Weltveränderungen</h2>
+      <p>OpenWorld kann wichtige Informationen aus Gesprächen speichern und Veränderungen
+        deiner Welt erkennen. Öffne zuerst eine Welt, um diese Funktion bewusst einzuschalten.</p>
+    </>}
+    <p className="muted">Der Einrichtungsassistent kann die technischen Einstellungen passend
+      zu deinem KI-Programm vorbereiten. Hier musst du normalerweise nichts ändern.</p>
+    <details><summary>Erweitert: Erkennung von Erinnerungen und Weltänderungen</summary>
+      <ExtractionSettings report={report} /></details>
+  </section></div>
 }
 
 function ExtractionSettings({ report }: { report: (text: string) => void }) {
@@ -109,6 +134,7 @@ function ExtractionSettings({ report }: { report: (text: string) => void }) {
   const [clearKey, setClearKey] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  useEffect(() => { setDraft(null); setKey(''); setClearKey(false) }, [query.data])
   const value = draft ?? query.data
   if (query.error) return <p role="alert">{errorText(query.error)}</p>
   if (!value) return <p className="muted">Extraktionseinstellungen werden geladen ...</p>

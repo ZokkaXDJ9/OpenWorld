@@ -74,13 +74,14 @@ test('Eldoria: graphical editors, private knowledge, streaming and persistent co
   await save(page)
 
   await navigate(page, 'Einstellungen')
+  await page.getByText('Erweitert: Verbindung manuell bearbeiten', { exact: true }).click()
   await page.getByLabel('Base-URL').fill('http://127.0.0.1:18090/v1')
   await page.getByLabel('Modellname').fill('TEST-ONLY')
   await page.getByRole('button', { name: 'Verbindung speichern' }).click()
   await expect(page.getByRole('status')).toContainText('Einstellungen gespeichert')
 
   await navigate(page, 'Ereignisse')
-  await page.getByText('Ereigniserkennung und Freigaben', { exact: true }).click()
+  await page.getByText('Expertenmodus: Ereigniserkennung und Freigaben', { exact: true }).click()
   await page.getByLabel('Ereignisse nach Gesprächen erkennen').check()
   await expect(page.getByLabel('Ereignisse nach Gesprächen erkennen')).toBeEnabled()
   await navigate(page, 'Chats')

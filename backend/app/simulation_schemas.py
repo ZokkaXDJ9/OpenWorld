@@ -14,6 +14,7 @@ class GroupInput(StrictModel):
 
 
 class SimulationInput(GroupInput):
+    recognize_events: bool = True
     max_rounds: int = Field(default=20, ge=1, le=500)
     max_calls: int = Field(default=100, ge=1, le=2000)
     max_tokens: int = Field(default=250000, ge=1024, le=10000000)

@@ -194,10 +194,24 @@ def put_event_settings(world_id: str, body: EventSettingsInput, db: DB):
     result = db.execute(
         update(type(row))
         .where(type(row).world_id == world_id, type(row).revision == body.revision)
-        .values(enabled=body.enabled, revision=body.revision + 1)
+        .values(
+            **body.model_dump(exclude={"revision"}, exclude_none=True), revision=body.revision + 1
+        )
     )
     if result.rowcount != 1:
         raise HTTPException(409, "Ereigniseinstellungen wurden inzwischen geändert")
+    if body.automation_disabled:
+        for job in db.scalars(
+            select(ExtractionJob).where(
+                ExtractionJob.world_id == world_id,
+                ExtractionJob.status.in_(["pending", "running", "failed"]),
+            )
+        ):
+            job.status = "skipped"
+            job.diagnostics = [
+                *job.diagnostics,
+                {"status": "skipped", "reason": "automation_disabled"},
+            ]
     db.commit()
     db.refresh(row)
     return encode(row)

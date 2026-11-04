@@ -19,6 +19,7 @@ class ExtractionRuntime:
     reasoning_mode: str = "default"
     structured_output: str = "auto"
     auto_retry: bool = True
+    omit_temperature: bool = False
 
 
 def extraction_provider_settings(db: Session) -> ExtractionProviderSettings:
@@ -51,4 +52,10 @@ def resolve_extraction_settings(db: Session) -> ExtractionRuntime:
         reasoning_mode=row.reasoning_mode,
         structured_output=row.structured_output,
         auto_retry=row.auto_retry,
+        omit_temperature=bool(
+            chat
+            and connection is chat
+            and model == chat.model
+            and (chat.setup_state or {}).get("omit_temperature")
+        ),
     )

@@ -131,7 +131,8 @@ def enqueue(
     recipient_id: str | None = None,
     simulation_id: str | None = None,
 ) -> ExtractionJob | None:
-    if not simulation_id and not event_settings(db, conversation.world_id).enabled:
+    options = event_settings(db, conversation.world_id)
+    if options.automation_disabled or (not simulation_id and not options.enabled):
         return None
     sources = sources or [message]
     covered = []
@@ -393,7 +394,13 @@ async def run_job(db: Session, job_id: str, provider):
     job = db.get(ExtractionJob, job_id)
     if not job or job.status != "pending":
         return
-    if not job.simulation_id and not event_settings(db, job.world_id).enabled:
+    options = event_settings(db, job.world_id)
+    if options.automation_disabled:
+        job.status = "skipped"
+        job.diagnostics = [*job.diagnostics, {"status": "skipped", "reason": "automation_disabled"}]
+        db.commit()
+        return
+    if not job.simulation_id and not options.enabled:
         return
     claimed = db.execute(
         update(ExtractionJob)
@@ -492,7 +499,16 @@ async def run_job(db: Session, job_id: str, provider):
                 job.status = "invalidated"
                 db.commit()
                 return
-            if not job.simulation_id and not event_settings(db, job.world_id).enabled:
+            options = event_settings(db, job.world_id)
+            if options.automation_disabled:
+                job.status = "skipped"
+                job.diagnostics = [
+                    *job.diagnostics,
+                    {"status": "skipped", "reason": "automation_disabled"},
+                ]
+                db.commit()
+                return
+            if not job.simulation_id and not options.enabled:
                 raise ProviderError("Extraktion wurde während der Verarbeitung deaktiviert.")
             with db.begin_nested():
                 events = []

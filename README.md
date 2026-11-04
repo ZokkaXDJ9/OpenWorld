@@ -177,7 +177,8 @@ der Vorschau, nicht als selbststaendiger API-Server.
 3. **Charaktere** → mindestens einen Charakter erstellen; optional Profil und Ort setzen.
 4. **Beziehungen** → gerichtete Beziehung mit eigenen Werten erstellen.
 5. **Wissen & Erinnerungen** → geheime Weltfakten und individuelles Wissen getrennt anlegen.
-6. **Einstellungen** → Base-URL, Modell und gegebenenfalls API-Schluessel speichern.
+6. **Einstellungen → KI-Verbindung einrichten** → Programm auswählen, Verbindung prüfen,
+   ein gefundenes Modell auswählen und eine Antwort testen. Danach Einrichtung abschließen.
 7. **Chats** → Charakter auswaehlen → Neues Gespraech → Nachricht senden.
 
 ### Orte verschieben und ordnen
@@ -203,6 +204,57 @@ Nur während eines laufenden Speichervorgangs sind weitere Schreibaktionen gespe
 Der Elternort lässt sich weiterhin auch im Formular ändern.
 
 ### Lokale KI konfigurieren
+
+Auf der Startseite ohne einsatzbereite Verbindung oder unter **Einstellungen →
+KI-Verbindung einrichten** den Assistenten öffnen:
+
+1. **Lokale KI auf diesem Computer**, **KI über einen Online-Anbieter** oder
+   **Eigene Verbindung (erweitert)** auswählen.
+2. Der lokale Assistent prüft LM Studio und Ollama und zeigt deren tatsächliche
+   Chatmodelle mit Ladestatus. Ohne erreichbaren Server oder geladenes Modell
+   nennt er die nächsten Schritte im jeweiligen Programm. Bei Online-Anbietern
+   Anbieter auswählen, Schlüssel eingeben und Modelle abrufen.
+3. Ein Modell wählen und **Antwort testen** anklicken. Erst nach einer echten,
+   abgeschlossenen Antwort lässt sich die Einrichtung speichern.
+
+Die Suche und die Statusanzeige fragen nur Modellmetadaten ab. Der bewusste
+Antworttest sendet keine Welten oder Gespräche, kann bei Online-Anbietern aber
+Kosten verursachen. Ein zweiter Test bei einer nicht unterstützten Einstellung
+erfolgt nur mit der dafür sichtbaren Freigabe; online ist diese standardmäßig aus.
+Bei Zugangsschlüssel-, Guthaben- und Verbindungsfehlern gibt es keine automatische
+Wiederholung. OpenWorld installiert oder lädt keine KI-Modelle ungefragt herunter.
+
+Der Assistent lässt geöffnete Chats, Entwürfe, Gruppen und Simulationen erhalten.
+Nach dem Abschluss gelangt man zum vorherigen Vorgang zurück. Abbrechen verändert
+keine gespeicherte Verbindung. Gespeicherte Schlüssel werden ausschließlich bei
+unveränderter Serveradresse wiederverwendet und niemals zurückgegeben.
+
+Das Backend verwendet das tatsächlich geladene Kontextfenster, soweit der Server
+es zuverlässig meldet, nicht die theoretische Modellobergrenze. Ohne verlässliche
+Angabe gelten vorsichtig 4.096 Kontexttokens und 1.024 Antworttokens; Unsicherheiten
+werden intern festgehalten. Reasoning-Steuerung wird nicht aus Modellnamen geraten.
+Bei unbekannter Unterstützung werden keine zusätzlichen Denkmodus-Parameter gesendet.
+Experten können automatische Vorgaben ausschalten und weiterhin sämtliche
+Verbindungs-, Budget-, Reasoning- und Ausgabeoptionen bearbeiten.
+
+**Erinnerungen und Weltveränderungen** bietet normale Schalter für automatische
+Erinnerungen und die Bestätigung wichtiger Änderungen. Dabei entstehen zusätzliche
+Modellanfragen; darauf weist die Oberfläche vor der Aktivierung hin.
+**Automatische Erinnerungen und Ereignisse deaktivieren** unterbindet diese
+Anfragen auch in Simulationen. Wartende Aufträge werden übersprungen; das Ergebnis
+einer bereits laufenden Anfrage wird nicht mehr angewendet. Bereits begonnene
+Anbieteranfragen können dadurch nicht nachträglich kostenfrei gemacht werden.
+Gespeicherte Chats und Erinnerungen bleiben erhalten.
+
+Für neue Verbindungen bereitet der Assistent dieselbe KI auch für Erinnerungen vor:
+validiertes JSON per Prompt, unabhängiges Antwortbudget und keine automatischen
+Wiederholungen. Bei LM Studio/Ollama wird der Denkmodus nur bei tatsächlich
+gemeldeter Unterstützung ausgeschaltet. Bestehende technische Sondereinstellungen
+werden nur nach ausdrücklicher Auswahl ersetzt; die automatische Auswertung pro
+Welt wird durch die Einrichtung nicht aktiviert. Neue Simulationen verwenden
+standardmäßig die Chatverbindung ohne zusätzliche Erinnerungserkennung.
+
+Die folgenden Angaben sind nur für die manuelle Einrichtung unter **Erweitert** nötig:
 
 **Ollama:** Modell zuvor installieren, beispielsweise `ollama pull llama3.1:8b`.
 Den Ollama-Dienst starten. Base-URL `http://localhost:11434/v1`, Modell
@@ -250,7 +302,7 @@ Aufrufe; bei Cloud-Anbietern können dadurch zusätzliche Kosten entstehen.
 
 ### Extraktionsmodell und Kompatibilität
 
-Unter **Einstellungen → Ereignisextraktion** lassen sich Verbindung, Modell,
+Unter **Einstellungen → Erinnerungen aus Gesprächen → Erweitert** lassen sich Verbindung, Modell,
 Kontextfenster, Ausgabebudget, Temperature und Zeitlimit unabhängig vom Chat festlegen.
 Standardmäßig werden Verbindung und Zugangsschlüssel des Chats verwendet; ein leerer
 Extraktionsmodellname übernimmt den Chatmodellnamen. Eigene Schlüssel werden separat
@@ -827,6 +879,58 @@ Set-Location C:\OpenWorld\backend
 Vorher das gewünschte lokale Modell unter diesem Bezeichner in LM Studio laden,
 16k Kontext einstellen und den lokalen Server starten (Standardport 1234).
 Der Test verändert keine reguläre Datenbank und lädt/entlädt keine Modelle selbst.
+
+## Geführte KI-Einrichtung: Migration und Prüfprotokoll
+
+Migration `0006` ergänzt ausschließlich Verbindungsprüfungen und
+Erinnerungsfreigaben. Vorhandene Providerparameter, Chats, Ereignisregeln und
+Simulationsfreigaben bleiben erhalten. Alte Weltexporte der Version 1 lassen sich
+weiterhin importieren. Ein Downgrade auf `0005` entfernt nur die neuen
+Einrichtungsmetadaten und Freigabeoptionen, nicht die vorhandenen Weltdaten.
+
+Lokaler Prüfstand dieser UX-Überarbeitung:
+
+| Prüfung | Ergebnis |
+|---|---|
+| Vollständige Backendtests (`python -m pytest -q`) | **229 bestanden** |
+| Vollständige Browsertests (`npm run test:e2e`) | **26 bestanden** |
+| TypeScript und Produktionsbuild (`npm run build`) | bestanden |
+| Python-Lint (`python -m ruff check app tests migrations`) | bestanden |
+| Echter Qwen 3.5 9B über LM Studio | **14 Prüfungen bestanden** |
+| Lokale Migration `0005` → `0006` | alle bisherigen Werte in **27 Tabellen / 482 Zeilen** unverändert |
+| SQLite-Integrität und Fremdschlüssel nach Migration | bestanden |
+
+Die Tests decken Erststart und gleichzeitige Statusabfragen, Modelllisten,
+LM Studio/Ollama/Online-Einrichtung, nicht geladene Modelle, ungültige Schlüssel,
+unbekannte oder nicht unterstützte Modellparameter, begrenzte Wiederholungen,
+unveränderte Experteneinstellungen und quellengebundene Erinnerungen ab.
+Browserprüfungen öffnen die Einrichtung aus Chat, Gruppe und Simulation,
+erhalten den Chatentwurf und setzen den ursprünglichen Vorgang fort.
+Speicherfehler setzen die Erinnerungsschalter sichtbar zurück; deren Bedienung
+löst keine Modellanfragen aus. Abschalten während einer laufenden
+Erinnerungserkennung verhindert das Anwenden des Ergebnisses.
+
+Der echte lokale Test hat den gesamten Ablauf mit automatisch ermitteltem
+16k-Kontext durchlaufen: Modell finden → eine Antwort testen → Verbindung
+speichern → Charakterchat → persönliche Erinnerung → Abruf in einem neuen
+Gespräch → Simulation mit derselben KI. Die Erinnerungserkennung meldete
+**0 Reasoning-Tokens**. Testwelt und Datenbank waren temporär und wurden entfernt;
+das eigens geladene Testmodell wurde anschließend entladen.
+Ollama und Online-Anbieter wurden durch lokale Protokoll- und Browsertests
+geprüft, nicht durch kostenpflichtige Cloud-Anfragen.
+Die Backendtests melden zusätzlich einen bestehenden Deprecation-Hinweis
+des Starlette-Testclients; es gibt keine fehlgeschlagenen Tests.
+
+Den echten Einrichtungstest bei bewusst geladenem LM-Studio-Modell erneut ausführen:
+
+```powershell
+Set-Location C:\OpenWorld\backend
+& ..\.venv\Scripts\python.exe -m tests.verify_setup_live --model openworld-local-test --output "$env:TEMP\openworld-setup-result.json"
+```
+
+Wie beim Simulationstest vorher das gewünschte Modell unter diesem Bezeichner mit
+16k-Kontext laden und den lokalen Server starten. Der Test selbst installiert,
+lädt oder entlädt kein Modell und verändert keine reguläre Datenbank.
 
 ## Noch nicht implementiert / nächste Schritte
 

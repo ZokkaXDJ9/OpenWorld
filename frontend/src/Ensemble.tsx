@@ -2,13 +2,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { api, errorText } from './api'
 import { statusLabels } from './Events'
-import type { Entity, ExtractionJob, Message } from './types'
+import type { Entity, EventSettings, ExtractionJob, Message } from './types'
 import { Field } from './ui'
 
 type Scene = { character_ids: string[]; location_id: string; scene: string; communication: string }
 type Clock = { elapsed_minutes: number; minutes_per_day: number; epoch_label: string; revision: number }
 type Session = {
   id: string; title: string; revision: number; status: string; completed_rounds: number
+  recognize_events: boolean
   max_rounds: number; calls_used: number; max_calls: number; tokens_reserved: number; max_tokens: number
   seconds_used: number; timeout_seconds: number; stop_reason: string; error: string
   conversation_id: string; conversation: { scene: string; scene_location_id: string; communication: string }
@@ -23,7 +24,7 @@ const labels: Record<string, string> = {
   cancelled: 'Abgebrochen', failed: 'Fehlgeschlagen', round_limit: 'Rundenlimit',
   token_limit: 'Tokenbudget', call_limit: 'Anfragelimit', time_limit: 'Zeitlimit',
   step_limit: 'Schritt abgeschlossen', backend_restart: 'Backend neu gestartet',
-  extraction_failed: 'Extraktion fehlgeschlagen', generation_failed: 'Antwort fehlgeschlagen',
+  extraction_failed: 'Erinnerungen konnten nicht ausgewertet werden', generation_failed: 'Antwort fehlgeschlagen',
   participants_left: 'Nicht genug anwesende Charaktere', user_pause: 'Manuell pausiert',
   user_cancel: 'Manuell abgebrochen',
 }
@@ -55,9 +56,9 @@ function SceneFields({ value, change, characters, locations }: {
   </>
 }
 
-function NewSession({ simulation, characters, locations, save, busy }: {
+function NewSession({ simulation, characters, locations, save, busy, memoriesAllowed }: {
   simulation: boolean; characters: Entity[]; locations: Entity[]
-  save: (body: object) => Promise<void>; busy: boolean
+  save: (body: object) => Promise<void>; busy: boolean; memoriesAllowed: boolean
 }) {
   const [title, setTitle] = useState('Begegnung')
   const [scene, setScene] = useState<Scene>({
@@ -67,6 +68,7 @@ function NewSession({ simulation, characters, locations, save, busy }: {
   const [limits, setLimits] = useState({ max_rounds: 20, max_calls: 100, max_tokens: 250000,
     timeout_seconds: 600, minutes_per_round: 1 })
   const [model, setModel] = useState('')
+  const [recognizeEvents, setRecognizeEvents] = useState(false)
   const numeric = [
     ['max_rounds', 'Rundenlimit', 1, 500], ['max_calls', 'Anfragelimit', 1, 2000],
     ['max_tokens', 'Tokenbudget (konservativ geschätzt)', 1024, 10000000],
@@ -75,13 +77,19 @@ function NewSession({ simulation, characters, locations, save, busy }: {
   ] as const
   return <form className="panel p-5 space-y-4 mb-5" onSubmit={event => {
     event.preventDefault()
-    void save({ title, ...scene, ...(simulation ? { ...limits, event_mode: mode, model } : {}) })
+    void save({ title, ...scene, ...(simulation ? { ...limits, event_mode: mode, model,
+      recognize_events: recognizeEvents && memoriesAllowed } : {}) })
   }}>
     <h2>{simulation ? 'Neue Simulation' : 'Neues Gruppengespräch'}</h2>
     <Field label="Titel"><input value={title} required maxLength={200}
       onChange={event => setTitle(event.target.value)} /></Field>
     <SceneFields value={scene} change={setScene} characters={characters} locations={locations} />
     {simulation && <>
+      <label className="checkbox"><input type="checkbox" checked={recognizeEvents && memoriesAllowed}
+        disabled={!memoriesAllowed} onChange={event => setRecognizeEvents(event.target.checked)} />
+        Erinnerungen und Weltveränderungen mit KI erkennen (zusätzliche Anfragen)</label>
+      {!memoriesAllowed && <p className="muted text-sm">Automatische KI-Erinnerungen sind für diese
+        Welt derzeit nicht freigegeben. Du kannst die Freigabe in den Einstellungen prüfen.</p>}
       <Field label="Weltänderungen"><select value={mode} onChange={event => setMode(event.target.value)}>
         <option value="rules">Nach bestehenden Freigaberegeln</option>
         <option value="confirm">Alle Vorschläge bestätigen</option>
@@ -96,8 +104,9 @@ function NewSession({ simulation, characters, locations, save, busy }: {
           onChange={event => setModel(event.target.value)} /></Field>
       </div></details>
       <p className="muted text-sm">Eine Runde = ein Charakterbeitrag. Reihenfolge wie ausgewählt.
-        Jede Extraktion zählt als eigene Anfrage. Keine automatischen Wiederholungen.
-        Start nutzt die eingestellten Provider; bei Cloudanbietern können Kosten entstehen.</p>
+        Jede Antwort benötigt eine KI-Anfrage. Mit eingeschalteter Erinnerungserkennung kommen
+        weitere Anfragen pro hörender Figur hinzu. Keine automatischen Wiederholungen.
+        Start nutzt deine KI-Verbindung; bei Cloudanbietern können Kosten entstehen.</p>
     </>}
     <button className="button primary" disabled={busy || scene.character_ids.length < 2}>
       {busy ? 'Wird gespeichert …' : 'Anlegen'}</button>
@@ -176,6 +185,8 @@ export function Ensemble({ worldId, characters, locations, report, onEvents, sim
   const [address, setAddress] = useState('')
   const [steps, setSteps] = useState(5)
   const resource = simulation ? 'simulations' : 'group-conversations'
+  const memoryOptions = useQuery({ queryKey: ['event-settings', worldId],
+    queryFn: () => api<EventSettings>(`/worlds/${worldId}/event-settings`) })
   const base = `/worlds/${worldId}/${resource}`
   const key = [resource, worldId]
   const list = useQuery({ queryKey: key, queryFn: () => api<(Session | Group)[]>(base),
@@ -221,9 +232,10 @@ export function Ensemble({ worldId, characters, locations, report, onEvents, sim
         {simulation ? 'Neue Simulation' : 'Neues Gruppengespräch'}</button>
       <button className="button" onClick={onEvents}>Ereignisse prüfen</button>
     </div>
-    {(list.error || detail.error || messages.error) && <p role="alert" className="error-banner">
-      {errorText(list.error ?? detail.error ?? messages.error)}</p>}
+    {(list.error || detail.error || messages.error || memoryOptions.error) && <p role="alert" className="error-banner">
+      {errorText(list.error ?? detail.error ?? messages.error ?? memoryOptions.error)}</p>}
     {creating && <NewSession simulation={simulation} characters={characters} locations={locations}
+      memoriesAllowed={!!memoryOptions.data && !memoryOptions.data.automation_disabled}
       busy={busy} save={async body => {
         setBusy(true); report('')
         try {
@@ -274,14 +286,23 @@ export function Ensemble({ worldId, characters, locations, report, onEvents, sim
       </section>
       {session && <aside className="panel p-5 space-y-4">
         <h3>Steuerung · {labels[session.status] ?? session.status}</h3>
+        <p className="muted text-sm">Jeder Charakterbeitrag benötigt eine KI-Anfrage.
+          {session.recognize_events ? ' Die Erkennung von Erinnerungen benötigt zusätzliche Anfragen pro hörender Figur.' :
+            ' Zusätzliche Erinnerungserkennung ist in dieser Simulation ausgeschaltet.'}
+          {' '}Bei Online-Anbietern können Kosten entstehen.</p>
         {session.stop_reason && <p>{labels[session.stop_reason] ?? session.stop_reason}</p>}
-        {session.error && <p role="alert" className="error-banner">{session.error}</p>}
+        {session.error && (session.stop_reason === 'extraction_failed' ?
+          <div role="alert" className="error-banner">
+            <p>Erinnerungen konnten nicht erkannt werden. Die bisherigen Gesprächsbeiträge bleiben erhalten.
+              Prüfe deine KI-Verbindung über „KI einrichten“.</p>
+            <details><summary>Expertenmodus: Diagnose</summary>{session.error}</details>
+          </div> : <p role="alert" className="error-banner">{session.error}</p>)}
         <p>Runden: {session.completed_rounds} / {session.max_rounds}<br />
           Anfragen: {session.calls_used} / {session.max_calls}<br />
           Tokenreservierung: {session.tokens_reserved.toLocaleString('de-DE')} / {session.max_tokens.toLocaleString('de-DE')}<br />
           Modellzeit: {session.seconds_used.toFixed(1)} / {session.timeout_seconds} s</p>
         <p className="muted text-xs">Tokens sind konservativ geschätzte Reservierungen, keine gemessene
-          Gesamtnutzung. Kosten unbekannt. Extraktion gemeldet: {session.reported_extraction_tokens ?? 'unbekannt'} Tokens.</p>
+          Gesamtnutzung. Kosten unbekannt. Erinnerungserkennung gemeldet: {session.reported_extraction_tokens ?? 'unbekannt'} Tokens.</p>
         <div className="flex flex-wrap gap-2">
           <button className="button primary" disabled={busy || !available} onClick={() =>
             void control(session.status === 'created' ? 'start' : 'resume')}>
@@ -314,7 +335,7 @@ export function Ensemble({ worldId, characters, locations, report, onEvents, sim
           characters={characters} locations={locations} busy={busy}
           save={async scene => { await action(`${base}/${id}/scene`, 'PUT',
             { ...scene, revision: session.revision }) }} />}
-        <details><summary>Extraktionsaufträge ({session.jobs.length})</summary>
+        <details><summary>Technische Diagnose der Erinnerungserkennung ({session.jobs.length})</summary>
           {session.jobs.map(job => <p key={job.id} className="muted text-xs mt-3">
             {job.status} · Versuch {job.attempts} / 3 {job.error && `· ${job.error}`}</p>)}
         </details>
