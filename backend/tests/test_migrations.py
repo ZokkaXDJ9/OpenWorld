@@ -51,7 +51,11 @@ def test_location_order_migration_preserves_existing_world_data(tmp_path):
     for target in ("0001", "head"):
         subprocess.run(
             [str(executable), "-m", "alembic", "upgrade", target],
-            cwd=backend, env=env, check=True, capture_output=True, text=True,
+            cwd=backend,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         if target == "0001":
             with sqlite3.connect(tmp_path / "openworld.db") as db:
@@ -80,3 +84,65 @@ def test_location_order_migration_preserves_existing_world_data(tmp_path):
     )
     with sqlite3.connect(tmp_path / "openworld.db") as db:
         assert db.execute("SELECT * FROM locations").fetchall() == before
+
+
+def test_phase2_migration_preserves_populated_messages_knowledge_and_profiles(tmp_path):
+    backend = Path(__file__).parents[1]
+    env = dict(os.environ, OPENWORLD_DATA_DIR=str(tmp_path))
+    env.pop("OPENWORLD_DATABASE_URL", None)
+
+    def migrate(target):
+        subprocess.run(
+            [__import__("sys").executable, "-m", "alembic", "upgrade", target],
+            cwd=backend,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    migrate("0002")
+    with sqlite3.connect(tmp_path / "openworld.db") as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("INSERT INTO worlds VALUES ('w','Welt','Lore','[]','{}',4)")
+        db.execute(
+            "INSERT INTO characters VALUES ('c','w','Lumia','Profil',"
+            """'{"Persoenlichkeit":"Ruhig"}','{}','[]',NULL,NULL,'unknown',7)"""
+        )
+        db.execute("INSERT INTO conversations VALUES ('chat','w','c','Alt','2020-01-01 12:00:00')")
+        db.execute(
+            "INSERT INTO messages VALUES ('msg','chat','user','Wie geht es dir?',"
+            "'complete','2020-01-01 12:00:00',1)"
+        )
+        db.execute(
+            "INSERT INTO messages VALUES ('answer','chat','assistant','Gut.',"
+            "'complete','2020-01-01 12:00:01',2)"
+        )
+        db.execute(
+            "INSERT INTO knowledge VALUES ('k','w','c','received','Wie geht es dir?',"
+            "'Benutzeraussage',50,0,'msg','2020-01-01 12:00:00',3)"
+        )
+        columns = {
+            table: [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+            for table in ("worlds", "characters", "conversations", "messages", "knowledge")
+        }
+        before = {
+            table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() for table in columns
+        }
+    migrate("head")
+    with sqlite3.connect(tmp_path / "openworld.db") as db:
+        for table, names in columns.items():
+            assert (
+                db.execute(f"SELECT {','.join(names)} FROM {table} ORDER BY id").fetchall()
+                == before[table]
+            )
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert db.execute("SELECT kind, confidence, origin FROM knowledge").fetchone() == (
+            "received",
+            50,
+            "legacy",
+        )
+        assert db.execute(
+            "SELECT speaker_character_id FROM messages WHERE id='answer'"
+        ).fetchone() == ("c",)
+        assert db.execute("SELECT count(*) FROM events").fetchone() == (0,)

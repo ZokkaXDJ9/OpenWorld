@@ -69,6 +69,13 @@ h3 { font-size: 16px; font-weight: 600; }
 .world-editor-layout { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 22px; align-items: start; }
 @media (max-width: 780px) { .world-editor-layout { grid-template-columns: minmax(0, 1fr); } }
 .tree-help { font-size: 11px; color: var(--muted); margin: 10px 8px; line-height: 1.6; }
+.event-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; align-items: end; }
+.event-layout { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr); gap: 20px; align-items: start; }
+.event-item { display: flex; flex-direction: column; gap: 10px; text-align: left; width: 100%; padding: 18px; color: var(--text); overflow-wrap: anywhere; }
+.event-item small { color: var(--muted); }
+.event-item.selected { border-color: var(--accent); }
+.event-layout article { overflow-wrap: anywhere; }
+@media (max-width: 900px) { .event-layout { grid-template-columns: minmax(0, 1fr); } }
 .field { display: block; font-size: 12px; }
 .field > label { display: block; margin-bottom: 7px; color: var(--muted); }
 input:not([type=checkbox]), textarea, select { display: block; width: 100%; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 10px 11px; font-size: 13px; }

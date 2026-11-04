@@ -36,6 +36,44 @@ def encrypt_key(key: str) -> str:
 
 
 class OpenAIProvider:
+    async def extract(self, messages: list[dict[str, str]], settings: ProviderSettings) -> str:
+        headers = {"Content-Type": "application/json"}
+        if settings.encrypted_key:
+            headers["Authorization"] = (
+                "Bearer " + cipher().decrypt(settings.encrypted_key.encode()).decode()
+            )
+        payload = {
+            "model": settings.model, "messages": messages, "stream": False,
+            "max_tokens": min(settings.max_output_tokens, 4096), "temperature": 0,
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(180, connect=15)) as client:
+                response = await client.post(
+                    f"{settings.base_url}/chat/completions", headers=headers, json=payload
+                )
+                if response.status_code in {400, 422} and any(
+                    marker in response.text.casefold()
+                    for marker in ("response_format", "json_object", "structured output")
+                ):
+                    payload.pop("response_format")
+                    response = await client.post(
+                        f"{settings.base_url}/chat/completions", headers=headers, json=payload
+                    )
+                if response.status_code != 200:
+                    raise ProviderError(
+                        f"Ereignisextraktion: Anbieter antwortet mit HTTP {response.status_code}."
+                    )
+                try:
+                    content = response.json()["choices"][0]["message"]["content"]
+                except (ValueError, KeyError, TypeError, IndexError) as exc:
+                    raise ProviderError("Ungültiges Antwortformat der Ereignisextraktion.") from exc
+                if not isinstance(content, str) or not content.strip():
+                    raise ProviderError("Ereignisextraktion hat keinen Text geliefert.")
+                return content
+        except httpx.HTTPError as exc:
+            raise ProviderError("Ereignisextraktion: Anbieter nicht erreichbar/Zeitlimit.") from exc
+
     async def stream(
         self, messages: list[dict[str, str]], settings: ProviderSettings
     ) -> AsyncIterator[str]:

@@ -1,9 +1,15 @@
+import asyncio
+import json
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base, get_db, make_engine
+from app.extraction import run_job
 from app.main import app
+from app.models import ExtractionJob
 
 
 class RecordingProvider:
@@ -14,6 +20,41 @@ class RecordingProvider:
         self.contexts.append(messages)
         yield "Hallo! "
         yield "Ich bin hier."
+
+    async def extract(self, messages, settings):
+        source = json.loads(messages[1]["content"])
+        message = source["source"]
+        if message["role"] != "user" or not message["content"].startswith("Power hat "):
+            return '{"events":[]}'
+        return json.dumps(
+            {
+                "events": [
+                    {
+                        "event_type": "knowledge_acquired",
+                        "description": "Bericht über Power",
+                        "confidence": 90,
+                        "evidence_quote": message["content"],
+                        "operations": [
+                            {
+                                "op": "knowledge",
+                                "character_id": source["recipient_id"],
+                                "kind": "received",
+                                "content": message["content"],
+                                "confidence": 50,
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+
+def drain_jobs(factory, provider):
+    with factory() as db:
+        for job_id in list(
+            db.scalars(select(ExtractionJob.id).where(ExtractionJob.status == "pending"))
+        ):
+            asyncio.run(run_job(db, job_id, provider))
 
 
 @pytest.fixture
@@ -92,6 +133,7 @@ def eldoria(environment):
     )
     assert response.status_code == 200
     conversation = create(client, path + "/conversations", character_id=lumia["id"])
+    client.put("/api" + path + "/event-settings", json={"enabled": True, "revision": 1})
     return {
         "client": client,
         "factory": factory,

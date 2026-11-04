@@ -18,6 +18,29 @@ def captured_requests():
 @app.post("/v1/chat/completions")
 async def completion(body: dict):
     requests.append(body)
+    if not body.get("stream"):
+        source = json.loads(body["messages"][1]["content"])
+        message = source["source"]
+        events = []
+        if message["role"] == "user" and message["content"].startswith("Power hat "):
+            events.append(
+                {
+                    "event_type": "knowledge_acquired",
+                    "description": "Bericht über Power",
+                    "confidence": 90,
+                    "evidence_quote": message["content"],
+                    "operations": [
+                        {
+                            "op": "knowledge",
+                            "character_id": source["recipient_id"],
+                            "kind": "received",
+                            "confidence": 50,
+                            "content": message["content"],
+                        }
+                    ],
+                }
+            )
+        return {"choices": [{"message": {"content": json.dumps({"events": events})}}]}
     context = "\n".join(message["content"] for message in body["messages"])
     answer = (
         "Du hast mir erzaehlt, dass Power einen Kristall gefunden hat. "

@@ -26,7 +26,7 @@ def test_failed_regeneration_preserves_previous_answer(eldoria):
 
 def test_sourced_reference_blocks_chat_deletion_and_edit(eldoria):
     e = eldoria
-    send(e, "Hallo")
+    send(e, "Power hat einen Kristall.")
     knowledge = e["client"].get("/api" + e["path"] + "/knowledge").json()
     sourced = next(k for k in knowledge if k["kind"] == "received")
     create(

@@ -5,6 +5,7 @@ import type { FormEvent } from 'react'
 import { api, errorText } from './api'
 import { Attributes } from './Attributes'
 import { canMoveLocation } from './locationStructure'
+import { Memories } from './Memories'
 import type { Entity, KnowledgeKind, Resource } from './types'
 import { ConfirmButton, Field } from './ui'
 
@@ -117,7 +118,7 @@ export function Editor({
   </>
   const stateEditor = <section className="space-y-4">
     <p className="muted text-sm">Veränderlicher Zustand. Die ursprüngliche Beschreibung bleibt erhalten.
-      KI-Antworten verändern diese Werte nicht automatisch.</p>
+      Ereignisvorschläge werden nach den Freigaberegeln übernommen und protokolliert.</p>
     {Object.entries(draft.state ?? {}).map(([key, value]) => <div key={key} className="flex gap-2 items-end">
       <div className="flex-1"><Field label={key}><input value={String(value)}
         onChange={e => patch({ state: { ...draft.state, [key]: e.target.value } })} /></Field></div>
@@ -149,6 +150,7 @@ export function Editor({
         <Tabs.Trigger value="general">Allgemeines</Tabs.Trigger>
         <Tabs.Trigger value="profile">Persönlichkeit & Hintergrund</Tabs.Trigger>
         <Tabs.Trigger value="state">Zustand & Ort</Tabs.Trigger>
+        {item && <Tabs.Trigger value="memories">Erinnerungen</Tabs.Trigger>}
       </Tabs.List>
       <Tabs.Content value="general" className="space-y-4 mt-5">
         {general}
@@ -185,6 +187,9 @@ export function Editor({
         </div>}
         {stateEditor}
       </Tabs.Content>
+      {item && <Tabs.Content value="memories">
+        <Memories worldId={worldId} characterId={item.id} report={report} />
+      </Tabs.Content>}
     </Tabs.Root>}
     {resource === 'relationships' && <>
       <div className="grid sm:grid-cols-2 gap-4">
@@ -225,7 +230,7 @@ export function Editor({
           value={draft.confidence ?? 100} onChange={e => patch({ confidence: Number(e.target.value) })} /></Field>
       </div>
       {draft.source_message_id && <p className="muted text-xs">Herkunft: Chatnachricht {draft.source_message_id}.
-        Beim Entfernen der Quelle wird auch dieser Eintrag entfernt.</p>}
+        Änderungen der Quelle werden auf abhängige Ereignisse geprüft.</p>}
       <p className="muted text-sm">Nicht öffentliche Weltfakten gelangen nicht in den Chatkontext.
         Persönliches Wissen gilt nur für den gewählten Charakter, auch wenn es falsch ist.</p>
     </>}

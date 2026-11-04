@@ -1,8 +1,10 @@
+import asyncio
 import json
 import logging
 import os
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager, suppress
+from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -12,11 +14,15 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import delete, func, inspect, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from .context import ContextTooLarge, build_context
 from .db import get_db
+from .event_api import router as event_router
+from .event_worker import worker
+from .events import block_active_target_delete, invalidate_messages, record_editor_change
+from .extraction import enqueue
 from .models import (
     Character,
     Conversation,
@@ -40,8 +46,25 @@ from .schemas import (
     SendInput,
     WorldInput,
 )
+from .serialization import encode
 
-app = FastAPI(title="OpenWorld", version="0.1.1")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = None
+    if get_db not in app.dependency_overrides:
+        task = asyncio.create_task(worker(app))
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(title="OpenWorld", version="0.2.0", lifespan=lifespan)
+app.include_router(event_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(
@@ -91,20 +114,6 @@ RESOURCE_BODY = {
         },
     }
 }
-
-
-def encode(row) -> dict:
-    return jsonable_encoder(
-        {
-            column.key: (
-                value.replace(tzinfo=UTC)
-                if isinstance(value, datetime) and value.tzinfo is None
-                else value
-            )
-            for column in inspect(type(row)).columns
-            for value in [getattr(row, column.key)]
-        }
-    )
 
 
 def require(db: Session, model, item_id: str, world_id: str | None = None):
@@ -182,7 +191,20 @@ def update_row(db: Session, item, data: dict):
 
 
 def write(db: Session, item, data: dict):
+    tracked = (
+        {"state", "location_id", "destination_id", "travel_status"}
+        if isinstance(item, (World, Location, Character))
+        else {"attributes", "description", "kind", "secret"}
+        if isinstance(item, Relationship)
+        else {"content", "kind", "source", "confidence", "public", "character_id"}
+    )
+    changed = {key for key in tracked if key in data and data[key] != getattr(item, key)}
+    before = {key: deepcopy(getattr(item, key)) for key in changed}
+    after = {key: deepcopy(data[key]) for key in changed}
+    revision = data.get("revision")
     update_row(db, item, data)
+    if changed:
+        record_editor_change(db, item, before, after, revision)
     db.commit()
     db.refresh(item)
     return encode(item)
@@ -190,7 +212,7 @@ def write(db: Session, item, data: dict):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "phase": 1}
+    return {"status": "ok", "phase": 2}
 
 
 @app.get("/api/worlds")
@@ -224,6 +246,9 @@ async def delete_world(world_id: str, db: DB, request: Request, revision: int = 
         raise HTTPException(409, "Welt wurde inzwischen geändert")
     for conversation in db.scalars(select(Conversation).where(Conversation.world_id == world_id)):
         assert_idle(request, conversation.id)
+    from .models import Event
+
+    db.execute(delete(Event).where(Event.world_id == world_id))
     for model in (Conversation, Knowledge, Relationship, Character):
         db.execute(delete(model).where(model.world_id == world_id))
     locations = list(db.scalars(select(Location).where(Location.world_id == world_id)))
@@ -318,7 +343,10 @@ def list_resources(world_id: str, resource: Resource, db: DB):
     if resource is Resource.locations:
         return [encode(row) for row in ordered_locations(db, world_id)]
     model, _ = RESOURCES[resource]
-    return [encode(row) for row in db.scalars(select(model).where(model.world_id == world_id))]
+    query = select(model).where(model.world_id == world_id)
+    if model is Knowledge:
+        query = query.where(Knowledge.status == "active")
+    return [encode(row) for row in db.scalars(query)]
 
 
 async def parse_resource(request: Request, schema) -> dict:
@@ -390,6 +418,16 @@ async def delete_resource(
     row = require(db, model, item_id, world_id)
     if row.revision != revision:
         raise HTTPException(409, "Objekt wurde inzwischen geändert")
+    block_active_target_delete(
+        db,
+        {
+            Location: "location",
+            Character: "character",
+            Relationship: "relationship",
+            Knowledge: "knowledge",
+        }[model],
+        item_id,
+    )
     if model is Location:
         if db.scalar(select(Location.id).where(Location.parent_id == item_id)) or db.scalar(
             select(Character.id).where(
@@ -420,6 +458,18 @@ async def delete_resource(
                     db, select(Message.id).where(Message.conversation_id == conversation.id)
                 )
             )
+            invalidate_messages(
+                db,
+                list(
+                    db.scalars(select(Message.id).where(Message.conversation_id == conversation.id))
+                ),
+            )
+    if model is Character:
+        for related_model, kind in ((Knowledge, "knowledge"), (Relationship, "relationship")):
+            for related_id in db.scalars(
+                select(related_model.id).where(related_model.id.in_(removed_ids))
+            ):
+                block_active_target_delete(db, kind, related_id)
     ensure_unreferenced(db, world_id, removed_ids)
     db.delete(row)
     db.commit()
@@ -484,6 +534,9 @@ async def delete_conversation(conversation_id: str, request: Request, db: DB):
             db, select(Message.id).where(Message.conversation_id == conversation_id)
         ),
     )
+    invalidate_messages(
+        db, list(db.scalars(select(Message.id).where(Message.conversation_id == conversation_id)))
+    )
     db.delete(conversation)
     db.commit()
 
@@ -513,6 +566,14 @@ async def edit_message(
             ),
         ),
     )
+    affected_ids = list(
+        db.scalars(
+            select(Message.id).where(
+                Message.conversation_id == conversation_id, Message.sequence >= message.sequence
+            )
+        )
+    )
+    invalidate_messages(db, affected_ids)
     db.execute(
         delete(Message).where(
             Message.conversation_id == conversation_id,
@@ -521,17 +582,9 @@ async def edit_message(
     )
     db.execute(delete(Knowledge).where(Knowledge.source_message_id == message.id))
     message.content = body.content
-    db.add(
-        Knowledge(
-            world_id=conversation.world_id,
-            character_id=conversation.character_id,
-            kind="received",
-            content=body.content,
-            source="Benutzeraussage",
-            confidence=50,
-            source_message_id=message.id,
-        )
-    )
+    message.revision += 1
+    db.flush()
+    enqueue(db, conversation, message)
     db.commit()
     return encode(message)
 
@@ -581,6 +634,7 @@ def response_stream(
             if not content.strip():
                 raise ProviderError("KI-Anbieter hat eine leere Antwort geliefert")
             if replace_message:
+                invalidate_messages(db, [replace_message.id])
                 db.delete(replace_message)
                 db.flush()
             assistant = Message(
@@ -588,10 +642,16 @@ def response_stream(
                 role="assistant",
                 content=content,
                 sequence=replace_message.sequence if replace_message else last_sequence + 1,
+                speaker_character_id=conversation.character_id,
             )
             db.add(assistant)
+            db.flush()
+            enqueue(db, conversation, assistant)
             db.commit()
             yield sse("done", {"message": encode(assistant)})
+        except HTTPException as exc:
+            db.rollback()
+            yield sse("error", {"message": str(exc.detail)})
         except ProviderError as exc:
             log.warning("Provider failed in conversation %s: %s", conversation.id, exc)
             yield sse("error", {"message": str(exc)})
@@ -637,17 +697,7 @@ async def send_message(conversation_id: str, body: SendInput, request: Request, 
     )
     db.add(message)
     db.flush()
-    db.add(
-        Knowledge(
-            world_id=conversation.world_id,
-            character_id=conversation.character_id,
-            kind="received",
-            content=body.content,
-            source="Benutzeraussage",
-            confidence=50,
-            source_message_id=message.id,
-        )
-    )
+    enqueue(db, conversation, message)
     response = response_stream(conversation, request, db)
     db.commit()
     request.app.state.active_conversations.add(conversation.id)

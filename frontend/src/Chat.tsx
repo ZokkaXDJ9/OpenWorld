@@ -2,12 +2,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageCircle, Plus, RefreshCw, Send, Pencil } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, errorText, streamChat } from './api'
-import type { Conversation, Entity, Message } from './types'
+import type { Conversation, Entity, EventSettings, ExtractionJob, Message, WorldEvent } from './types'
 import { ConfirmButton, Empty, Field } from './ui'
 
 export function Chat({
-  worldId, characters, report,
-}: { worldId: string; characters: Entity[]; report: (text: string) => void }) {
+  worldId, characters, report, onEvents,
+}: { worldId: string; characters: Entity[]; report: (text: string) => void; onEvents: () => void }) {
   const client = useQueryClient()
   const [conversationId, setConversationId] = useState('')
   const [characterId, setCharacterId] = useState(characters[0]?.id ?? '')
@@ -27,12 +27,22 @@ export function Chat({
     queryFn: () => api<Message[]>(`/conversations/${conversationId}/messages`),
     enabled: !!conversationId,
   })
+  const eventSettings = useQuery({ queryKey: ['event-settings', worldId],
+    queryFn: () => api<EventSettings>(`/worlds/${worldId}/event-settings`) })
+  const jobs = useQuery({ queryKey: ['extraction-jobs', worldId, conversationId],
+    queryFn: () => api<ExtractionJob[]>(`/worlds/${worldId}/extraction-jobs?conversation_id=${conversationId}`),
+    enabled: !!conversationId, refetchInterval: 3000 })
+  const events = useQuery({ queryKey: ['events', worldId, conversationId],
+    queryFn: () => api<WorldEvent[]>(`/worlds/${worldId}/events?conversation_id=${conversationId}`),
+    enabled: !!conversationId, refetchInterval: 3000 })
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) },
     [partial, history.data?.length])
   async function refresh() {
     await Promise.all([
       client.invalidateQueries({ queryKey: ['messages', conversationId] }),
-      client.invalidateQueries({ queryKey: ['entities', worldId, 'knowledge'] }),
+      client.invalidateQueries({ queryKey: ['entities', worldId] }),
+      client.invalidateQueries({ queryKey: ['events', worldId] }),
+      client.invalidateQueries({ queryKey: ['extraction-jobs', worldId] }),
     ])
   }
   async function create() {
@@ -154,8 +164,26 @@ export function Chat({
             <button className="button primary" disabled={busy || !input.trim()}>
               <Send size={16} /> Senden</button>
           </div>
-          <p className="muted text-xs">Aussagen werden als persönlich erhaltene Informationen gespeichert,
-            nicht als Weltfakten. KI-Ausgaben sind keine Zustandsänderungen.</p>
+          {(events.error || jobs.error || eventSettings.error) && <p role="alert" className="error-text">
+            {errorText(events.error ?? jobs.error ?? eventSettings.error)}</p>}
+          <div className="flex flex-wrap gap-2 items-center">
+            <button type="button" className="button subtle small" onClick={onEvents}>
+              {events.data?.filter(event => event.status === 'proposed').length ?? 0} mögliche Änderungen erkannt
+            </button>
+            <span className="muted text-xs">{jobs.data?.some(job => job.status === 'failed') ?
+              'Erkennung fehlgeschlagen – Details unter Ereignisse' :
+              jobs.data?.some(job => ['pending', 'running'].includes(job.status)) ? 'Ereignisse werden geprüft ...' :
+                eventSettings.data?.enabled ? 'Ereigniserkennung aktiv' : 'Ereigniserkennung ausgeschaltet'}</span>
+            {eventSettings.data?.enabled && <button type="button" className="button subtle small" disabled={busy}
+              onClick={async () => {
+                try {
+                  await api(`/conversations/${conversationId}/extract`, 'POST')
+                  await refresh()
+                } catch (error) { report(errorText(error)) }
+              }}>Verlauf prüfen</button>}
+          </div>
+          <p className="muted text-xs">Behauptungen bleiben persönliche Informationen, keine Weltfakten.
+            Änderungen werden nach den Freigaberegeln geprüft.</p>
         </form>
       </>}
     </section>

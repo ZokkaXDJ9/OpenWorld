@@ -3,14 +3,15 @@ import {
   ArrowLeft, ArrowRight, BookOpen, ChevronRight, Globe2, Map, MessageCircle, Moon,
   Network, Plus, Settings2, Sparkles, Sun, Users, X,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, errorText } from './api'
 import { Chat } from './Chat'
 import { Editor, knowledgeLabels } from './Editor'
+import { Events } from './Events'
 import { LocationTree } from './LocationTree'
 import { moveLocations } from './locationStructure'
 import { Settings } from './Settings'
-import type { Entity, KnowledgeKind, Resource } from './types'
+import type { Entity, ExtractionJob, KnowledgeKind, Resource } from './types'
 import { Empty } from './ui'
 
 type Page = 'worlds' | 'locations' | 'characters' | 'relationships' | 'knowledge' | 'events' | 'chats' | 'settings'
@@ -50,6 +51,15 @@ export default function App() {
   const relationships = useEntities(worldId, 'relationships')
   const knowledge = useEntities(worldId, 'knowledge')
   const currentWorld = worlds.data?.find(w => w.id === worldId)
+  const jobs = useQuery({ queryKey: ['extraction-jobs', worldId],
+    queryFn: () => api<ExtractionJob[]>(`/worlds/${worldId}/extraction-jobs`),
+    enabled: !!currentWorld, refetchInterval: 2000 })
+  const completedJobs = jobs.data?.filter(job => ['complete', 'invalidated'].includes(job.status))
+    .map(job => `${job.id}:${job.status}`).join(',')
+  useEffect(() => {
+    void client.invalidateQueries({ queryKey: ['entities', worldId] })
+    void client.invalidateQueries({ queryKey: ['memories', worldId] })
+  }, [completedJobs, client, worldId])
   const editedLocation = editor?.resource === 'locations' && editor.item ?
     locations.data?.find(item => item.id === editor.item?.id) : undefined
   const objects = [...locations.data ?? [], ...characters.data ?? [],
@@ -112,11 +122,11 @@ export default function App() {
         <div className="breadcrumb"><span>OpenWorld</span><ChevronRight size={14} />
           <strong>{currentWorld && page !== 'worlds' && page !== 'settings' ? currentWorld.name : pageLabel}</strong>
         </div>
-        <div className="version-badge">v0.1.1</div>
+        <div className="version-badge">v0.2.0</div>
       </header>
       <div className="content">
-        {(error || worlds.error || relevantError) && <div className="error-banner" role="alert">
-          <span>{error || errorText(worlds.error ?? relevantError)}</span>
+        {(error || worlds.error || relevantError || jobs.error) && <div className="error-banner" role="alert">
+          <span>{error || errorText(worlds.error ?? relevantError ?? jobs.error)}</span>
           <button className="icon-button" aria-label="Fehler schliessen" onClick={() => setError('')}><X size={17} /></button>
         </div>}
         <div className="page-heading"><div>
@@ -231,15 +241,10 @@ export default function App() {
             {knowledge.data?.length === 0 && <Empty title="Keine Wissenseinträge vorhanden"
               text="Weltfakten oder persönliches Wissen über „Neuer Wissenseintrag“ anlegen." />}
           </section>}
-          {page === 'events' && <section className="panel p-8">
-            <span className="tag">Noch nicht implementiert · Phase 2</span>
-            <h2 className="mt-5">Nachvollziehbare Weltveränderungen</h2>
-            <p className="muted mt-4 max-w-2xl">Strukturierte KI-Änderungsvorschläge, Bestätigung,
-              Ereignisprotokoll und Rücknahme folgen in Phase 2. Aktuell verändert das LLM keine
-              objektiven Fakten oder Zustände. Zustandsfelder sind manuell in den Editoren bearbeitbar.</p>
-          </section>}
+          {currentWorld && page === 'events' && <Events key={worldId} worldId={worldId}
+            characters={characters.data ?? []} locations={locations.data ?? []} report={setError} />}
           {currentWorld && page === 'chats' && <Chat key={worldId} worldId={worldId}
-            characters={characters.data ?? []} report={setError} />}
+            characters={characters.data ?? []} report={setError} onEvents={() => navigate('events')} />}
           {page === 'settings' && <Settings report={setError} />}
           {!currentWorld && page !== 'worlds' && page !== 'settings' && <Empty title="Wähle zuerst eine Welt."
             text="Öffne eine vorhandene Welt unter Meine Welten oder erstelle eine neue." />}

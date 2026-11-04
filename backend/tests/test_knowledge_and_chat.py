@@ -2,7 +2,7 @@ import json
 
 import pytest
 import tiktoken
-from conftest import create
+from conftest import create, drain_jobs
 from sqlalchemy import select
 
 from app.context import ContextTooLarge, build_context
@@ -17,6 +17,7 @@ def send(e, text):
     )
     assert response.status_code == 200, response.text
     assert "event: done" in response.text, response.text
+    drain_jobs(e["factory"], e["provider"])
     return response
 
 
@@ -140,6 +141,7 @@ def test_chat_edit_removes_descendants_and_updates_provenance(eldoria):
         },
     )
     assert response.status_code == 200
+    drain_jobs(e["factory"], e["provider"])
     assert len(e["client"].get(path).json()) == 1
     rows = e["client"].get("/api" + e["path"] + "/knowledge").json()
     personal = [r for r in rows if r["character_id"] == e["lumia"]["id"]]

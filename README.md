@@ -56,6 +56,12 @@ ohne einen zweiten Backendprozess zu starten.
   8k-/32k-Grenze, eigener Bereich fuer erweiterte Modelleinstellungen.
 - SQLite, versionierte Alembic-Migration und automatisierte Akzeptanztests.
 - Responsives, helles/dunkles Interface mit Radix UI und TanStack Query.
+- Ereignisse mit validierten Vorschlägen, konfigurierbaren Freigaben, Quellen,
+  Zustandsverlauf, Bestätigung, Ablehnung und kontrollierter Rücknahme.
+- Individuelle Erinnerungen mit Korrekturverlauf, widersprechenden Einträgen,
+  historischem Ereigniszeitpunkt und vollständig lokaler hybrider Erinnerungssuche.
+- Bewusst aktivierbare Ereigniserkennung nach gespeicherten Chatnachrichten,
+  persistente lokale Aufträge, sichtbare Fehler und begrenzte Wiederholungen.
 
 Alle aktiven Editoraktionen schreiben in die Datenbank. Der
 Produktiv-Chat ruft den konfigurierten Anbieter auf; ohne Modell gibt es eine
@@ -75,6 +81,13 @@ OpenWorld\
       db.py             Datenbank und Sessionverwaltung
       context.py        Wissensfilterung, Retrieval und Tokenbudget
       provider.py       Providerprotokoll, Streamingadapter, Schluesselverwaltung
+      events.py         Validierung, Freigaben, atomare Mutationen und Undo
+      event_schemas.py  Strikte strukturierte Vorschläge und Operationen
+      event_api.py      Ereignisse, Freigaberegeln, Aufträge und Erinnerungen
+      extraction.py     Quellengebundene Extraktion und persistente Aufträge
+      event_worker.py   Lokaler, sequenzieller Hintergrunddienst
+      memory.py         Hybrides lokales Retrieval und Originalsatzauszüge
+      serialization.py Gemeinsame Serialisierung mit UTC-Zeitstempeln
     migrations\         Versioniertes Datenbankschema
     tests\              Backendtests und explizite Browser-Testdienste
     requirements-lock.txt
@@ -219,31 +232,101 @@ Eingehende Beziehungen verraten keine fremden Einschaetzungen oder Geheimnisse.
 Weltbeschreibungen und Nachrichten werden als Daten behandelt, nicht als Befehle
 fuer Datenbankzugriffe. Das LLM besitzt keine Schreibwerkzeuge oder Codeausfuehrung.
 
-Jede akzeptierte Benutzernachricht erzeugt vorerst **einen originalgetreuen Eintrag
-`received` mit Quelle `Benutzeraussage`, Vertrauen 50 und Nachrichtenreferenz**.
-Das ist eine konservative Grundlage fuer Langzeitwissen, keine semantische
-Faktenextraktion: auch Fragen und belanglose Nachrichten werden so gespeichert.
-Ein Geruecht wird dadurch niemals zum objektiven Fakt. Assistentenaussagen
-erzeugen keine automatischen Welt- oder Zustandsaenderungen.
+Eine Nachricht wird **nicht mehr pauschal als dauerhafte Erinnerung gespeichert**.
+Die Ereigniserkennung ist standardmäßig ausgeschaltet. Auf der Seite **Ereignisse**
+unter **Ereigniserkennung und Freigaben** kann sie bewusst pro Welt eingeschaltet
+werden. Sie verwendet denselben konfigurierten Anbieter für zusätzliche Aufrufe;
+bei Cloud-Anbietern können dadurch zusätzliche Kosten entstehen.
+
+Die Extraktion liefert ausschließlich strukturierte Vorschläge. Jeder Vorschlag
+aus einem Chat benötigt ein wörtliches Quellenzitat und existierende Referenzen
+derselben Welt. Erhaltene Informationen bewahren die Originalaussage, bleiben
+persönlich und haben höchstens 50 % Vertrauen. Fragen, Smalltalk und unklare
+Rückblicke sollen keine neuen Tatsachen erzeugen. Unsichere/paraphrasierte persönliche
+Erlebnisse sowie Assistentenerzählungen benötigen mindestens eine Bestätigung.
+Ungültige Ausgaben führen zu einem sichtbaren Fehler und keinerlei Teiländerungen.
+Ein LLM besitzt weiterhin weder Datenbankzugriff noch Schreibwerkzeuge.
+
+Sichere Standardfreigaben:
+
+- Persönliche erhaltene Informationen und eindeutige Erinnerungen: `auto`.
+- Korrekturen früherer Überzeugungen, Beziehungen und Charakterzustände: `confirm`.
+- Objektive Weltfakten sowie Welt- und Ortszustände: `protected`.
+
+Regeln lassen sich nach Ereignistyp und Objektklasse ändern. Die spezifischste
+Regel gilt; bei einem Vorschlag mit mehreren Operationen gilt die strengste
+Freigabe. Geschützte Weltfakten und Welt-/Ortszustände lassen sich nicht durch
+eine allgemeinere Auto-Regel entsperren; bewusst im jeweiligen Editor bearbeiten.
+Neue Ereignistypen sind freie, stabile Bezeichner wie `knowledge_acquired` oder
+`trust_changed`. Unterstützte Operationen sind persönliches Wissen, Korrekturen,
+Archivierung, vorhandene Beziehungsattribute, Charakterzustände und Aufenthaltsorte.
+Willkürliche neue Beziehungsattribute oder geänderte Attributdefinitionen werden
+nicht als Ereignisänderung akzeptiert.
 
 Beschreibung und `state` werden getrennt gespeichert. Manuelle Zustandsaenderungen
-ueberschreiben nicht die Beschreibung. Ein historisches Ereignis-/Undo-Protokoll
-ist noch nicht implementiert.
+überschreiben nicht die Beschreibung. Änderungen im Editor an Zuständen,
+Aufenthaltsorten, Beziehungen und Wissensinhalten werden ebenfalls mit Vorher-/
+Nachherwerten protokolliert. Alle automatisch angewendeten Änderungen besitzen
+ein reversibles Mutationsprotokoll.
+
+### Ereignisse, Quellen und Rücknahme
+
+Ein **Ereignis** beschreibt einen Vorgang mit Beteiligten, optionalem Ort und
+eigenem Ereigniszeitpunkt. Ein **Vorschlag** enthält zulässige Operationen und deren
+Freigabe. Erst eine **Mutation** verändert einen Datensatz. Das Auditprotokoll
+zeichnet Erstellung, Bearbeitung, automatische/manuelle Übernahme, Ablehnung,
+Invalidierung und Rücknahme geordnet auf.
+
+Ereigniszeit und Speicherzeit sind getrennt. Auch historische Erlebnisse, etwa
+aus dem Jahr 1200, sind möglich. Nachrichten tragen eine eigene Revision und
+eine optionale Sprecheridentität unabhängig von ihrer Chatrolle. Beteiligte,
+Quellennachrichten, Ziele, Wissensverknüpfungen und Mutationen werden relational
+gespeichert; Operationsdaten und Vorher-/Nachherwerte sind zusätzlich JSON.
+
+**Rücknahme** prüft aktuelle Werte, Revisionsketten und Wissensabhängigkeiten.
+Neuere abhängige Ereignisse müssen zuerst zurückgenommen werden. Unbekannte
+manuelle Änderungen blockieren ein Undo, statt überschrieben zu werden. Die
+Prüfung ist bewusst konservativ und erfolgt auf Objekt-/Feldebene; verschiedene
+Änderungen innerhalb desselben Zustandsobjekts können deshalb ebenfalls blockieren.
+Nach Rücknahme eines späteren Ereignisses lässt sich die frühere Änderung wieder
+zurücknehmen. Das Undo wird selbst protokolliert; neue Erinnerungen werden dabei
+als zurückgenommen markiert und nicht spurlos gelöscht.
+
+Beim Bearbeiten/Löschen einer Quelle oder erfolgreicher Regenerierung werden
+zugehörige Vorschläge invalidiert und angewendete Änderungen atomar zurückgenommen.
+Bei Abhängigkeitskonflikten bleibt der ursprüngliche Verlauf erhalten und der
+Benutzer erhält einen sichtbaren Konflikt. Fehlgeschlagene Regenerierung ersetzt
+keine gespeicherte Antwort. Quellenzitate bleiben auch nach Entfernen einer
+Nachricht im Ereignisverlauf erhalten.
+
+Im Charaktereditor bietet **Erinnerungen** das Hinzufügen, Korrigieren und Entfernen
+persönlicher Einträge. **Verlauf anzeigen** zeigt überholte/entfernte Einträge mit
+Quelle und Korrekturverknüpfungen. Ungelöste Widersprüche können als `contradicts`
+verknüpft werden; begründete Korrekturen verwenden `supersedes`. Unterschiedliche
+Charaktere behalten voneinander unabhängige Sichtweisen auf dasselbe Ereignis.
 
 ### Kontextverwaltung
 
 Modellfenster und Ausgabereserve sind konfigurierbar, auch 128k oder 256k.
 Pflichtkontext (Profil, Welt, aktueller Ort und letzte Nachricht) hat Vorrang.
-Dann folgen aktuelle Gespraechsnachrichten und persoenliches Wissen, gewichtet
-nach Wortueberschneidung mit der letzten Nachricht; bei gleichem Gewicht zuerst
-neuere Eintraege. Bereits im Verlauf enthaltene Benutzeraussagen werden nicht
-zusaetzlich als Erinnerung eingespeist.
+Dann folgen aktuelle Gesprächsnachrichten und persönliches Wissen, gewichtet
+nach Wortüberschneidung, verknüpften Charakteren, deutschen Themenmustern
+(u. a. Beziehungen, Versprechen, Begegnungen, Verlust), Wichtigkeit und zeitlicher
+Relevanz. So findet eine Frage nach „zwischen euch“ auch eine Erinnerung an
+entzogenes Vertrauen ohne identische zentrale Begriffe.
+Bereits im Verlauf enthaltene Aussagen und identische Wissenseinträge werden
+nicht doppelt eingespeist. Überholte Überzeugungen erscheinen bei ausdrücklichen
+Rückblicken mit ihrem historischen Status, nicht als aktuelle Wahrheit.
 
 Tokenzaehlung mit `cl100k_base`, acht Overhead-Tokens pro Nachricht und 256 Tokens
 Sicherheitsreserve. Das ist fuer fremde Modelltokenizer **eine Naeherung, keine
 Garantie**. Ein zu grosser Pflichtkontext wird sichtbar abgelehnt und nicht heimlich
-abgeschnitten. Aelteres Wissen wird bei Platzmangel priorisiert; automatische
-Zusammenfassung und effizientere Datenbank-Retrieval-Indizes folgen spaeter.
+abgeschnitten. Älteres Wissen wird bei Platzmangel priorisiert; passende vollständige
+Originalsätze können als ausdrücklich gekennzeichneter Auszug eingebunden werden.
+Quelle, Wissensart, Unsicherheit und Charakterzuordnung bleiben getrennt.
+Es gibt keine generative Zusammenfassung, keine verpflichtenden Embeddings und
+keinen zusätzlichen Cloud-Dienst. Die lokale Themen-/Entitätensuche ist kein
+universelles semantisches Sprachmodell und versteht nicht jede Paraphrase.
 
 ## API, Konflikte und Loeschregeln
 
@@ -257,6 +340,12 @@ Die API verwendet das Praefix `/api`:
 | Nachrichten | `GET/POST /conversations/{id}/messages`, `PUT /conversations/{id}/messages/{message}` |
 | Regenerierung | `POST /conversations/{id}/regenerate` |
 | Provider | `GET/PUT /settings/provider` |
+| Ereignisse | `GET/POST /worlds/{id}/events`, `GET/PUT /worlds/{id}/events/{event}` |
+| Ereignisaktionen | `POST /worlds/{id}/events/{event}/approve`, `/reject`, `/undo` |
+| Erkennung/Freigaben | `GET/PUT /worlds/{id}/event-settings`, `GET/PUT /worlds/{id}/event-rules` |
+| Extraktionsaufträge | `GET /worlds/{id}/extraction-jobs`, `POST /worlds/{id}/extraction-jobs/{job}/retry` |
+| Bestehenden Verlauf prüfen | `POST /conversations/{id}/extract` |
+| Persönlicher Verlauf | `GET /worlds/{id}/characters/{character}/memories` |
 
 `resource` ist `locations`, `characters`, `relationships` oder `knowledge`.
 Die jeweiligen Pydantic-Eingabemodelle stehen in `backend\app\schemas.py`.
@@ -303,14 +392,40 @@ indirekt geloeschte Beziehungs- und Wissenseintraege.
 
 Charakterloeschung entfernt dessen Chats, persoenliches Wissen und Beziehungen.
 Weltloeschung entfernt saemtliche Daten dieser Welt.
-Chatloeschung entfernt aus seinen Benutzernachrichten abgeleitetes Wissen.
+Bestehende Ereignisabhängigkeiten können einzelne Objektlöschungen blockieren;
+betroffene Änderungen zuerst zurücknehmen oder offene Vorschläge ablehnen.
+Chatlöschung invalidiert seine Ereignisse und nimmt abgeleitete Änderungen zurück,
+sofern keine neueren Abhängigkeiten entgegenstehen.
 Bearbeiten einer alten Benutzernachricht verlangt `confirm_discard: true`:
-Nachfolgende Nachrichten und ihre abgeleiteten Eintraege werden entfernt;
-das Wissen aus der bearbeiteten Nachricht wird ersetzt. Weltfakten bleiben
-unveraendert. Quellengebundenes Chatwissen laesst sich nicht direkt in einen
+Nachfolgende Nachrichten werden entfernt; zugehörige Ereignisse werden kontrolliert
+invalidiert. Für die bearbeitete Nachrichtenrevision kann ein neuer Extraktionsauftrag
+entstehen. Historisches Phase-1-Chatwissen folgt weiterhin seiner ursprünglichen
+Quellenbindung. Unabhängige Weltfakten bleiben unverändert.
+Quellengebundenes Chatwissen lässt sich nicht direkt in einen
 Weltfakt umwandeln; dafuer bewusst einen separaten Weltfakt anlegen.
 Eine Regenerierung ersetzt nur die letzte Assistentenantwort und
 erst nach erfolgreichem Stream; bei Fehlern bleibt die bisherige Antwort erhalten.
+
+Ereignislisten unterstützen `character_id`, `location_id`, `event_type`, `status`,
+`conversation_id`, `from_time`, `until_time`, `limit` und `offset`.
+`PUT` eines Vorschlags verlangt `?revision=...`; Aktionen verwenden
+`{"revision": 1}`. Schemas und Beispiele stehen unter `/docs`. Generische
+Wissenslisten liefern aktuelle Einträge; der Erinnerungsendpoint liefert auch
+deren Verlauf.
+
+Extraktion und Streaming sind getrennt. Abgeschlossene Nachrichten erzeugen nur
+bei aktivierter Erkennung persistente Aufträge. Der lokale Worker verarbeitet
+diese sequenziell. Ein Schlüssel aus Nachrichten-ID, Revision und Extraktorversion
+verhindert wiederholte Übernahme derselben Quelle. Fehlgeschlagene Aufträge werden
+nicht endlos automatisch wiederholt: höchstens drei bewusst ausgelöste Versuche.
+Beim Neustart bleiben wartende Aufträge erhalten; unterbrochene laufende Aufträge
+werden mit sichtbarer Fehlermeldung markiert. Erkennungsfehler entfernen keine
+bereits gespeicherten Chatnachrichten.
+
+Der OpenAI-kompatible Adapter versucht JSON-Ausgabe und fällt nur bei explizit
+gemeldeter fehlender Unterstützung von `response_format` auf normales JSON im
+Antworttext zurück. Auch dann bleibt vollständige Pydantic-/Referenzvalidierung
+verpflichtend; es gibt keine heuristische Reparatur beschädigter JSON-Daten.
 
 Pro Gespraech ist nur eine laufende Generierung erlaubt. Konfliktbehaftetes
 Loeschen/Bearbeiten wird waehrenddessen blockiert. **Nur einen Uvicorn-Worker
@@ -382,28 +497,70 @@ Beziehungen, Tokenbudgets ueber 32k, Migrationen, Schluessel und Providerfehler 
 Browsertests pruefen den gesamten grafischen Ablauf, Streaming, Wiederaufnahme,
 Nachrichtenbearbeitung, Regenerierung und mobile Breite.
 
-Verifiziert am 3. November 2026: **42 Backendtests erfolgreich**, **1 vollstaendiger
-Playwright-Benutzerablauf erfolgreich**, Ruff ohne Fehler, TypeScript-Pruefung und
-Vite-Produktionsbuild erfolgreich. Desktop- und 390-Pixel-Mobilansicht wurden
-zusaetzlich visuell kontrolliert. Der Testdienst prueft die Providerintegration
+Die Phase-2-Tests prüfen die Akzeptanzfälle A–K: Geheimnisse, subjektive
+Informationsübertragung, Überzeugungskorrektur, Beziehungsfreigabe, Undo und
+Abhängigkeiten, lokale Erinnerungssuche, ungültige Ausgaben, Regenerierung,
+Quellenbearbeitung und transaktionalen Rollback. Migrationstests vergleichen
+sämtliche ursprünglichen Spalten befüllter Welten, Profile, Chats und Wissenseinträge.
+Browserprüfungen decken zusätzlich Bearbeitung/Bestätigung/Rücknahme von Vorschlägen
+und den persönlichen Erinnerungsverlauf ab.
+
+Verifiziert am 4. November 2026: **91 Backendtests und 14 Browsertests bestanden**.
+Ruff, TypeScript-Prüfung und Vite-Produktionsbuild sind erfolgreich.
+
+Der Testdienst prüft die Providerintegration
 und die tatsaechlich uebertragenen Kontextdaten, nicht die Antwortqualitaet eines
-echten LLM. Ein echtes Modell wurde in dieser Umgebung nicht getestet.
+echten LLM. **Die semantische Qualität der Ereignisextraktion wurde in dieser
+Umgebung noch nicht mit einem echten Modell praktisch validiert.**
 Starlette meldet im TestClient eine Abkuendigungswarnung fuer dessen httpx-Integration;
 die Tests funktionieren mit den fixierten Versionen.
 Zusaetzlich bestehen sechs Regressionstests fuer leere, HTML-, Text- und
 ungueltige JSON-Fehlerantworten, unveraenderte FastAPI-Fehlerdetails und den
 sichtbaren Backend-Starthinweis. Dieselbe Fehlerbehandlung gilt fuer API und Chat.
 
-## Noch nicht implementiert / naechste Schritte
+### Mit einem echten Modell prüfen
 
-1. **Phase 2:** strukturierte LLM-Vorschlaege fuer Wissens- und Zustandsaenderungen;
-   separate validierende Services; Regeln `auto`, `confirm`, `protected`;
-   transaktionales Ereignisprotokoll mit Quelle, Ablehnung und Undo.
-   Semantische Erinnerungsbildung, Zusammenfassungen, Korrekturverlauf und
-   gezielteres SQL-Retrieval ergaenzen.
-2. **Phase 3:** React-Flow-Beziehungsgraph, Gruppenchats, Simulation und Zeitachse,
+1. In einer separaten Testwelt Lumia und Power anlegen. Ein verborgenes Weltfaktum
+   und persönliches Geheimnis nur Power zuweisen.
+2. Unter Einstellungen einen vertrauenswürdigen lokalen OpenAI-kompatiblen Anbieter
+   (z. B. Ollama oder LM Studio) und dessen tatsächlich geladenes Modell konfigurieren.
+3. Unter Ereignisse die Erkennung bewusst einschalten. Ein ausreichendes
+   Kontextfenster und Ausgabelimit für strukturiertes JSON konfigurieren.
+4. Zunächst „Wie geht es dir?“ senden: kein dauerhafter Wissenseintrag erwartet.
+   Danach „Power hat einen Kristall gefunden.“ senden.
+5. Unter Ereignisse bzw. Erinnerungen prüfen: ausschließlich Lumia erhält eine
+   quellengebundene Information mit höchstens 50 % Vertrauen. Powers Wissen und
+   der verborgene Weltfakt bleiben unverändert. Extraktionsfehler stehen unter
+   Ereignisse; sie sind keine erfolgreich erkannten Weltveränderungen.
+6. Einen bestehenden Beziehungswert im Gespräch thematisieren. Einen plausiblen
+   Vorschlag prüfen, bearbeiten/bestätigen und danach zurücknehmen.
+7. Mit einer neuen Unterhaltung und einer umformulierten Frage die Erinnerung
+   prüfen; anschließend Quellennachricht bearbeiten und Regenerierung testen.
+
+Für qualitative Prüfung verschiedene Modellantworten und Formulierungen testen.
+Ein Modell kann Ereignisse übersehen oder unbegründete Vorschläge erzeugen;
+Quellenprüfung und Freigaben ersetzen keine Garantie semantischer Richtigkeit.
+
+### Migration 0003
+
+`alembic upgrade head` ergänzt Ereignisse, Vorschläge, Beteiligte, Quellen, Ziele,
+Mutationen, Audit, Freigaberegeln, Extraktionsaufträge, Welteinstellungen und
+Wissensverknüpfungen. Nachrichten erhalten Revision/Sprecheridentität; Wissen erhält
+Status, Provenienz, Ereignis-/Subjektbezug, Erlebniszeit, Wichtigkeit und Emotion.
+Alte Inhalte, IDs, Quellen, Vertrauenswerte und Profilfeldschlüssel bleiben erhalten.
+Bestehendes Wissen wird als `legacy` markiert und **nicht** nachträglich verifiziert.
+Migrationen vor dem Start ausführen und vorher die lokale Datenbank sichern.
+Ein Schema-Downgrade entfernt die neuen Phase-2-Verlaufsdaten und ist kein Daten-Undo.
+
+## Noch nicht implementiert / nächste Schritte
+
+1. **Phase 3:** React-Flow-Beziehungsgraph, Gruppenchats, Simulation und Zeitachse,
    kontrollierte Reisen und weiterer Provideradapter. Portabler JSON-Import/-Export.
-3. **Phase 4:** Konten, serverseitige Autorisierung, revisionsbasierte Synchronisierung,
+   Die Grundlagen für unabhängige Sprecheridentitäten, mehrere Ereignisbeteiligte,
+   charakterbezogene Kontexte und transaktionale Operationen sind vorhanden.
+   Eine autonome Gesprächs-/Simulationssteuerung und komplexe Inventartransaktionen
+   sind ausdrücklich noch nicht implementiert.
+2. **Phase 4:** Konten, serverseitige Autorisierung, revisionsbasierte Synchronisierung,
    PostgreSQL-Tests, Feldvorlagen, Plugins und separater Google-Drive-Backupadapter.
 
 Geplantes Exportformat: Envelope `{ "format": "openworld", "version": 1, "world": ...,

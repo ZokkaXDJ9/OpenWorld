@@ -144,3 +144,56 @@ def test_adapter_rejects_errors_and_unfinished_stream(monkeypatch, response):
 
     with pytest.raises(ProviderError):
         asyncio.run(collect())
+
+
+def test_structured_extraction_falls_back_only_for_unsupported_json_format(monkeypatch):
+    captured = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        captured.append(body)
+        if "response_format" in body:
+            return httpx.Response(400, text="response_format is not supported")
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"events":[]}'}}]})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)),
+    )
+    settings = ProviderSettings(
+        base_url="http://localhost/v1",
+        model="test",
+        encrypted_key="",
+        max_output_tokens=2048,
+        temperature=0.7,
+    )
+    assert asyncio.run(OpenAIProvider().extract([], settings)) == '{"events":[]}'
+    assert len(captured) == 2
+    assert captured[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in captured[1]
+
+
+def test_extraction_does_not_retry_authentication_failure(monkeypatch):
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        return httpx.Response(401)
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)),
+    )
+    settings = ProviderSettings(
+        base_url="http://localhost/v1",
+        model="test",
+        encrypted_key="",
+        max_output_tokens=2048,
+    )
+    with pytest.raises(ProviderError, match="HTTP 401"):
+        asyncio.run(OpenAIProvider().extract([], settings))
+    assert len(captured) == 1
