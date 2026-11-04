@@ -184,10 +184,12 @@ export function ConnectionSetup({ initial, close }: {
               if (!event.currentTarget.form?.reportValidity()) return
               setProof(''); setReply('')
               void run(async () => {
-                const result = await api<{ reply: string; settings: ProviderSettings; verification_token: string }>(
+                const result = await api<{ reply: string; settings: ProviderSettings;
+                  verification_token: string; warnings?: string[] }>(
                   '/settings/provider/test', 'POST', { ...credentials(), kind, automatic,
                     manual_model: manual, allow_compatibility_retry: retry })
                 setValue(result.settings); setReply(result.reply); setProof(result.verification_token)
+                setNotice(result.warnings?.join(' ') ?? '')
               })
             }}>Antwort testen</button>
             {reply && <div role="status" className="notice">Das Modell hat geantwortet: {reply}</div>}

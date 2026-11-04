@@ -315,7 +315,7 @@ async def prepare(body: ProviderDiscoveryInput, stored: ProviderSettings):
                 raise HTTPException(502, "Die Modellfähigkeiten von Ollama sind nicht lesbar.")
             if "thinking" in advertised:
                 selected["reasoning_off"] = True
-        row.context_window = context or 4096
+        row.context_window = context or 8192
         row.max_output_tokens = min(2048, row.context_window // 4)
         row.temperature = 0.7
         row.reasoning_profile = {
@@ -368,7 +368,7 @@ def memory_defaults(
         use_chat_connection=True,
         model="",
         context_window=row.context_window,
-        max_output_tokens=min(4096, row.context_window // 2),
+        max_output_tokens=min(4096, row.context_window // 4),
         provider_profile=profile,
         reasoning_mode=(
             "off"
@@ -436,6 +436,15 @@ async def verify(body: ProviderDiscoveryInput, stored: ProviderSettings, checks:
         "settings": public_connection(row),
         "verification_token": token,
         "attempts": attempts,
+        "warnings": (
+            [
+                "Deine KI kann Gespräche führen. Für automatische Erinnerungen bietet das "
+                "geladene Modell möglicherweise zu wenig Platz. Lade es im KI-Programm mit "
+                "größerer Gesprächslänge oder wähle dafür ein größeres Modell."
+            ]
+            if row.context_window < 8192
+            else []
+        ),
     }
 
 

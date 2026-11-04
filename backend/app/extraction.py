@@ -65,6 +65,8 @@ target_revision und den exakten vorhandenen Gegenstandsnamen item.
 Nur Inventarlisten erlauben Übergaben. Besitz nicht aus einer Behauptung erfinden.
 Absichten und Reisen ohne tatsächlich ausgeführte Handlung erzeugen keine Ortsmutation.
 Wissen nur für recipient_id erzeugen. received hat maximal confidence 50.
+Bei jeder knowledge-Operation muss character_id exakt recipient_id entsprechen.
+Die Person, über die eine Aussage berichtet, ist NICHT der Empfänger dieser Information.
 Bei received muss content ein wörtlicher Ausschnitt aus der QUELLE sein, keine Paraphrase.
 Assistant-Erzählungen sind keine bestätigten Weltveränderungen.
 Analysiere beide Nachrichten eines abgeschlossenen Gesprächswechsels gemeinsam.
@@ -309,6 +311,7 @@ def extraction_context(
     sources = sources or [message]
     data = {
         "recipient_id": recipient.id,
+        "recipient_name": recipient.name,
         "recipient_state": {
             "id": recipient.id,
             "revision": recipient.revision,
@@ -335,12 +338,16 @@ def extraction_context(
             for row in db.scalars(select(Character).where(Character.world_id == recipient.world_id))
             if can_hear(db, message, row.id)
         ]
+    schema = ExtractionOutput.model_json_schema()
+    schema["$defs"]["KnowledgeOperation"]["properties"]["character_id"]["const"] = recipient.id
     messages = [
-        {"role": "system", "content": PROMPT + json.dumps(ExtractionOutput.model_json_schema())},
+        {"role": "system", "content": PROMPT + json.dumps(schema)},
         {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
         {
             "role": "user",
             "content": (
+                f"Empfänger dieser Auswertung: {recipient.id}. Jede knowledge-Operation muss "
+                f"character_id exakt auf {recipient.id} setzen, nicht auf die erwähnte Person. "
                 "Prüfe source_messages: Welche neuen konkreten Informationen erhält recipient_id? "
                 "Speichere neue mitgeteilte Angaben als received, ungeachtet ihrer unbestätigten "
                 "Wahrheit. Prüfe außerdem belegte Handlungen, subjektive Wahrnehmungen, "

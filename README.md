@@ -231,9 +231,12 @@ unveränderter Serveradresse wiederverwendet und niemals zurückgegeben.
 
 Das Backend verwendet das tatsächlich geladene Kontextfenster, soweit der Server
 es zuverlässig meldet, nicht die theoretische Modellobergrenze. Ohne verlässliche
-Angabe gelten vorsichtig 4.096 Kontexttokens und 1.024 Antworttokens; Unsicherheiten
+Angabe gelten vorsichtig 8.192 Kontexttokens und 2.048 Antworttokens; Unsicherheiten
 werden intern festgehalten. Reasoning-Steuerung wird nicht aus Modellnamen geraten.
 Bei unbekannter Unterstützung werden keine zusätzlichen Denkmodus-Parameter gesendet.
+Das Antwortbudget für Erinnerungen lässt ausreichend Platz für deren Prüfauftrag.
+Bei einem erkannten kleinen Modellfenster weist der Assistent darauf hin, dass
+Gespräche möglich sind, automatische Erinnerungen aber mehr Platz benötigen können.
 Experten können automatische Vorgaben ausschalten und weiterhin sämtliche
 Verbindungs-, Budget-, Reasoning- und Ausgabeoptionen bearbeiten.
 
@@ -892,11 +895,11 @@ Lokaler Prüfstand dieser UX-Überarbeitung:
 
 | Prüfung | Ergebnis |
 |---|---|
-| Vollständige Backendtests (`python -m pytest -q`) | **229 bestanden** |
+| Vollständige Backendtests (`python -m pytest -q`) | **232 bestanden** |
 | Vollständige Browsertests (`npm run test:e2e`) | **26 bestanden** |
 | TypeScript und Produktionsbuild (`npm run build`) | bestanden |
 | Python-Lint (`python -m ruff check app tests migrations`) | bestanden |
-| Echter Qwen 3.5 9B über LM Studio | **14 Prüfungen bestanden** |
+| Echter Qwen 3.5 9B über LM Studio | **3 Durchläufe mit je 14 Prüfungen bestanden** |
 | Lokale Migration `0005` → `0006` | alle bisherigen Werte in **27 Tabellen / 482 Zeilen** unverändert |
 | SQLite-Integrität und Fremdschlüssel nach Migration | bestanden |
 
@@ -909,6 +912,11 @@ erhalten den Chatentwurf und setzen den ursprünglichen Vorgang fort.
 Speicherfehler setzen die Erinnerungsschalter sichtbar zurück; deren Bedienung
 löst keine Modellanfragen aus. Abschalten während einer laufenden
 Erinnerungserkennung verhindert das Anwenden des Ergebnisses.
+Der interne Auftrag bindet Wissensänderungen ausdrücklich an den tatsächlichen
+Empfänger, nicht an die erwähnte Figur. Falsch zugeordnete Vorschläge bleiben
+verboten; sie werden nicht stillschweigend auf eine andere Figur umgebogen.
+Zusätzliche Tests prüfen, dass das automatisch gewählte Erinnerungsbudget den
+tatsächlichen Prüfauftrag auch bei unbekannten Modellmetadaten aufnehmen kann.
 
 Der echte lokale Test hat den gesamten Ablauf mit automatisch ermitteltem
 16k-Kontext durchlaufen: Modell finden → eine Antwort testen → Verbindung

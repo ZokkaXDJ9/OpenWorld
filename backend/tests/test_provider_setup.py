@@ -175,7 +175,7 @@ def test_unknown_capabilities_choose_conservative_defaults(environment, monkeypa
     complete(client)
     with factory() as db:
         row = db.get(ProviderSettings, 1)
-        assert row.context_window == 4096 and row.max_output_tokens == 1024
+        assert row.context_window == 8192 and row.max_output_tokens == 2048
         assert "runtime_context" in row.setup_state["uncertainties"]
         assert row.reasoning_mode == "default"
 
@@ -505,3 +505,64 @@ def test_unreadable_saved_key_offers_setup_instead_of_server_error(environment):
     response = client.get("/api/settings/provider/status")
     assert response.status_code == 200 and response.json()["state"] == "unavailable"
     assert "erneut ein" in response.json()["message"]
+
+
+@pytest.mark.parametrize("metadata_context", [8192, None])
+def test_automatic_memory_budget_fits_its_real_prompt_and_binds_the_recipient(
+    eldoria, monkeypatch, metadata_context
+):
+    from test_events import extract, extracted_event, queue_source
+
+    from app.event_schemas import ExtractionOutput
+    from app.extraction import extraction_context
+    from app.models import Message
+
+    e = eldoria
+
+    def handler(request):
+        if request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "chosen",
+                            "context_length": metadata_context,
+                        }
+                    ]
+                },
+            )
+        return server(request)
+
+    transport(monkeypatch, handler)
+    complete(e["client"])
+    message_id, job_id = queue_source(e)
+    with e["factory"]() as db:
+        runtime = resolve_extraction_settings(db)
+        messages = extraction_context(db, db.get(Message, message_id), runtime)
+    content = messages[0]["content"]
+    schema = json.loads(content[content.index('{"$defs":') :])
+    assert (
+        schema["$defs"]["KnowledgeOperation"]["properties"]["character_id"]["const"]
+        == e["lumia"]["id"]
+    )
+    assert (
+        "const"
+        not in ExtractionOutput.model_json_schema()["$defs"]["KnowledgeOperation"]["properties"][
+            "character_id"
+        ]
+    )
+    assert runtime.context_window == 8192 and runtime.max_output_tokens == 2048
+    wrong = extracted_event(e)
+    wrong["operations"][0]["character_id"] = e["power"]["id"]
+    result = extract(e, job_id, {"events": [wrong]})
+    assert result["status"] == "failed"
+    assert "Gesprächsempfängers" in result["error"]
+
+
+def test_small_runtime_window_has_plain_memory_warning(environment, monkeypatch):
+    client, _, _ = environment
+    transport(monkeypatch, server)
+    result = complete(client, automatic=False, context_window=4096, max_output_tokens=1024)
+    assert result["reply"] == "OK"
+    assert any("automatische Erinnerungen" in warning for warning in result["warnings"])
