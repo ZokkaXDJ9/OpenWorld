@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+.ensemble-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 20px; align-items: start; }
+.ensemble-transcript { max-height: 65vh; overflow-y: auto; overflow-wrap: anywhere; }
+.ensemble-message { border-top: 1px solid var(--border); padding: 18px 0; }
+.relationship-graph { height: 480px; border: 1px solid var(--border); border-radius: 8px; background: #e9eee7; }
+.relationship-graph .react-flow .react-flow__edge-textwrapper, .relationship-graph .react-flow .react-flow__edge-text { pointer-events: all; cursor: pointer; }
+@media (max-width: 1000px) { .ensemble-layout { grid-template-columns: minmax(0, 1fr); } }
+
 :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; }

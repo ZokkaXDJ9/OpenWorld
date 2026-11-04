@@ -27,14 +27,17 @@ from .extraction_settings import extraction_provider_settings
 from .models import (
     Character,
     Conversation,
+    ConversationParticipant,
     ExtractionProviderSettings,
     Knowledge,
     Location,
     Message,
     ProviderSettings,
     Relationship,
+    Simulation,
     World,
 )
+from .portability import router as portability_router
 from .provider import OpenAIProvider, ProviderError, encrypt_key
 from .schemas import (
     CharacterInput,
@@ -50,6 +53,8 @@ from .schemas import (
     WorldInput,
 )
 from .serialization import encode
+from .simulation import worker as simulation_worker
+from .simulation_api import router as simulation_router
 
 
 @asynccontextmanager
@@ -57,17 +62,24 @@ async def lifespan(app: FastAPI):
     task = None
     if get_db not in app.dependency_overrides:
         task = asyncio.create_task(worker(app))
+    simulation_task = asyncio.create_task(simulation_worker(app)) if task else None
     try:
         yield
     finally:
+        if simulation_task:
+            simulation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await simulation_task
         if task:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
 
 
-app = FastAPI(title="OpenWorld", version="0.2.1", lifespan=lifespan)
+app = FastAPI(title="OpenWorld", version="0.3.0", lifespan=lifespan)
 app.include_router(event_router)
+app.include_router(simulation_router)
+app.include_router(portability_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(
@@ -215,7 +227,7 @@ def write(db: Session, item, data: dict):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "phase": 2}
+    return {"status": "ok", "phase": 3}
 
 
 @app.get("/api/worlds")
@@ -244,6 +256,13 @@ def edit_world(world_id: str, body: WorldInput, db: DB):
 
 @app.delete("/api/worlds/{world_id}", status_code=204)
 async def delete_world(world_id: str, db: DB, request: Request, revision: int = Query(ge=1)):
+    if db.scalar(
+        select(Simulation.id).where(
+            Simulation.world_id == world_id,
+            Simulation.status == "running",
+        )
+    ):
+        raise HTTPException(409, "Vor dem Löschen der Welt laufende Simulationen beenden.")
     world = require(db, World, world_id)
     if world.revision != revision:
         raise HTTPException(409, "Welt wurde inzwischen geändert")
@@ -278,6 +297,7 @@ def conversations(world_id: str, db: DB):
             select(Conversation)
             .where(
                 Conversation.world_id == world_id,
+                Conversation.kind == "single",
             )
             .order_by(Conversation.created_at.desc())
         )
@@ -440,6 +460,20 @@ async def delete_resource(
             raise HTTPException(409, "Ort besitzt Unterorte oder wird von Charakteren verwendet")
     removed_ids = {item_id}
     if model is Character:
+        if db.scalar(
+            select(ConversationParticipant.character_id)
+            .join(
+                Conversation,
+                Conversation.id == ConversationParticipant.conversation_id,
+            )
+            .where(
+                ConversationParticipant.character_id == item_id,
+                Conversation.kind != "single",
+            )
+        ):
+            raise HTTPException(
+                409, "Charakter wird in einem gespeicherten Gruppen-/Simulationsverlauf verwendet."
+            )
         removed_ids.update(
             db.scalars(
                 select(Relationship.id).where(
@@ -550,6 +584,10 @@ def messages(conversation_id: str, db: DB):
 async def delete_conversation(conversation_id: str, request: Request, db: DB):
     assert_idle(request, conversation_id)
     conversation = require(db, Conversation, conversation_id)
+    if conversation.kind == "simulation":
+        raise HTTPException(
+            409, "Simulationsverläufe bleiben erhalten; Simulation beenden statt löschen."
+        )
     ensure_unreferenced(
         db,
         conversation.world_id,
@@ -574,6 +612,12 @@ async def edit_message(
 ):
     assert_idle(request, conversation_id)
     conversation = require(db, Conversation, conversation_id)
+    if conversation.kind != "single":
+        raise HTTPException(
+            409,
+            "Gruppen-/Simulationsverläufe sind unveränderlich. "
+            "Eingriff als neue Nachricht speichern.",
+        )
     message = require(db, Message, message_id)
     if message.conversation_id != conversation_id or message.role != "user":
         raise HTTPException(422, "Nur eigene Nachrichten dieses Gesprächs sind bearbeitbar")
@@ -665,6 +709,7 @@ def response_stream(
                 content=content,
                 sequence=replace_message.sequence if replace_message else last_sequence + 1,
                 speaker_character_id=conversation.character_id,
+                speaker_type="character",
             )
             db.add(assistant)
             db.flush()
@@ -698,6 +743,10 @@ def response_stream(
 async def send_message(conversation_id: str, body: SendInput, request: Request, db: DB):
     assert_idle(request, conversation_id)
     conversation = require(db, Conversation, conversation_id)
+    if conversation.kind != "single":
+        raise HTTPException(
+            409, "Mehrcharaktergespräch über die Gruppen-/Simulationssteuerung fortsetzen."
+        )
     if not settings(db).model:
         raise HTTPException(422, "Bitte zuerst einen KI-Anbieter und ein Modell konfigurieren")
     sequence = (
@@ -730,6 +779,10 @@ async def send_message(conversation_id: str, body: SendInput, request: Request, 
 async def regenerate(conversation_id: str, request: Request, db: DB):
     assert_idle(request, conversation_id)
     conversation = require(db, Conversation, conversation_id)
+    if conversation.kind != "single":
+        raise HTTPException(
+            409, "Mehrcharakterrunden werden nicht ohne konsistente Rückabwicklung ersetzt."
+        )
     last = db.scalar(
         select(Message)
         .where(

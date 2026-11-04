@@ -3,7 +3,7 @@ import {
   ArrowLeft, ArrowRight, BookOpen, ChevronRight, Globe2, Map, MessageCircle, Moon,
   Network, Plus, Settings2, Sparkles, Sun, Users, X,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { api, errorText } from './api'
 import { Chat } from './Chat'
 import { Editor, knowledgeLabels } from './Editor'
@@ -11,10 +11,15 @@ import { Events } from './Events'
 import { LocationTree } from './LocationTree'
 import { moveLocations } from './locationStructure'
 import { Settings } from './Settings'
+import { Ensemble } from './Ensemble'
+import { WorldTransfer } from './WorldTransfer'
 import type { Entity, ExtractionJob, KnowledgeKind, Resource } from './types'
 import { Empty } from './ui'
 
-type Page = 'worlds' | 'locations' | 'characters' | 'relationships' | 'knowledge' | 'events' | 'chats' | 'settings'
+const RelationshipGraph = lazy(() => import('./RelationshipGraph').then(module =>
+  ({ default: module.RelationshipGraph })))
+
+type Page = 'worlds' | 'locations' | 'characters' | 'relationships' | 'knowledge' | 'events' | 'chats' | 'groups' | 'simulations' | 'settings'
 const navigation = [
   { id: 'worlds', label: 'Meine Welten', icon: Globe2 },
   { id: 'locations', label: 'Welteditor', icon: Map },
@@ -23,6 +28,8 @@ const navigation = [
   { id: 'knowledge', label: 'Wissen & Erinnerungen', icon: BookOpen },
   { id: 'events', label: 'Ereignisse', icon: Sparkles },
   { id: 'chats', label: 'Chats', icon: MessageCircle },
+  { id: 'groups', label: 'Gruppengespräche', icon: Users },
+  { id: 'simulations', label: 'Simulationen', icon: Network },
   { id: 'settings', label: 'Einstellungen', icon: Settings2 },
 ] as const
 
@@ -122,7 +129,7 @@ export default function App() {
         <div className="breadcrumb"><span>OpenWorld</span><ChevronRight size={14} />
           <strong>{currentWorld && page !== 'worlds' && page !== 'settings' ? currentWorld.name : pageLabel}</strong>
         </div>
-        <div className="version-badge">v0.2.0</div>
+        <div className="version-badge">v0.3.0</div>
       </header>
       <div className="content">
         {(error || worlds.error || relevantError || jobs.error) && <div className="error-banner" role="alert">
@@ -204,9 +211,13 @@ export default function App() {
             {characters.data?.length === 0 && <Empty title="Keine Charaktere vorhanden"
               text="Über „Neuer Charakter“ einen Charakter anlegen." />}
           </>}
-          {currentWorld && page === 'relationships' && <section className="panel p-5">
-            <div className="notice mb-5">Gerichtete Beziehungen: Werte sind unabhängig je Richtung.
-              Der grafische Beziehungseditor folgt in Phase 3.</div>
+          {currentWorld && page === 'relationships' && <>
+            <Suspense fallback={<p role="status">Beziehungsgraph wird geladen …</p>}>
+              <RelationshipGraph characters={characters.data ?? []} relationships={relationships.data ?? []}
+                edit={item => setEditor({ resource: 'relationships', item })} />
+            </Suspense>
+            <section className="panel p-5 mt-5">
+            <div className="notice mb-5">Gerichtete Beziehungen: Werte sind unabhängig je Richtung.</div>
             <div className="table-scroll"><table><thead><tr><th>Von</th><th>Zu</th><th>Beziehung</th><th>Sichtbarkeit</th><th /></tr></thead>
               <tbody>{relationships.data?.map(r => <tr key={r.id}>
                 <td>{characters.data?.find(c => c.id === r.source_id)?.name}</td>
@@ -216,7 +227,7 @@ export default function App() {
               </tr>)}</tbody></table></div>
             {relationships.data?.length === 0 && <Empty title="Keine Beziehungen vorhanden"
               text="Über „Neue Beziehung“ zwei Charaktere verknüpfen." />}
-          </section>}
+          </section></>}
           {currentWorld && page === 'knowledge' && <section className="space-y-4">
             <div className="panel p-5 flex flex-wrap items-center gap-3">
               <BookOpen size={18} /><label htmlFor="knowledge-filter">Wissensstand anzeigen:</label>
@@ -245,6 +256,13 @@ export default function App() {
             characters={characters.data ?? []} locations={locations.data ?? []} report={setError} />}
           {currentWorld && page === 'chats' && <Chat key={worldId} worldId={worldId}
             characters={characters.data ?? []} report={setError} onEvents={() => navigate('events')} />}
+          {currentWorld && (page === 'simulations' || page === 'groups') && <Ensemble
+            key={`${worldId}:${page}`} worldId={worldId} simulation={page === 'simulations'}
+            characters={characters.data ?? []} locations={locations.data ?? []}
+            report={setError} onEvents={() => navigate('events')} />}
+          {page === 'worlds' && <WorldTransfer report={setError} />}
+          {currentWorld && page === 'locations' && <div className="mt-5">
+            <WorldTransfer worldId={worldId} report={setError} /></div>}
           {page === 'settings' && <Settings report={setError} />}
           {!currentWorld && page !== 'worlds' && page !== 'settings' && <Empty title="Wähle zuerst eine Welt."
             text="Öffne eine vorhandene Welt unter Meine Welten oder erstelle eine neue." />}

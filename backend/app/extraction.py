@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from .conversations import can_hear
 from .event_schemas import (
     ExtractionOutput,
     LocationOperation,
@@ -34,6 +35,7 @@ from .models import (
     ExtractionJobSource,
     Message,
     Relationship,
+    Simulation,
 )
 from .provider import ExtractionResponse, ProviderError
 
@@ -53,6 +55,15 @@ Bereits im sichtbaren Wissen vorhandene inhaltsgleiche Informationen nicht dupli
 confidence am Ereignis bewertet, wie eindeutig die Quelle den Vorgang belegt.
 Das Vertrauen in den Wahrheitsgehalt einer Behauptung steht separat an der Wissensoperation.
 Keine fremden Geheimnisse ableiten.
+Bei Mehrcharakterquellen ist speaker_character_id die tatsächliche Identität,
+nicht die technische Rolle. Nur recipient_id darf persönliche Informationen erhalten.
+Eigene Aussagen sind keine von jemand anderem erhaltenen Informationen.
+Tatsächlich gehörte fremde Aussagen als received (maximal 50 %) behandeln, nie als Weltfakt.
+Beobachtbare ausgeführte eigene Handlungen können location oder transfer vorschlagen.
+transfer referenziert den Besitzer als entity_id, dessen revision, den anwesenden target_id,
+target_revision und den exakten vorhandenen Gegenstandsnamen item.
+Nur Inventarlisten erlauben Übergaben. Besitz nicht aus einer Behauptung erfinden.
+Absichten und Reisen ohne tatsächlich ausgeführte Handlung erzeugen keine Ortsmutation.
 Wissen nur für recipient_id erzeugen. received hat maximal confidence 50.
 Bei received muss content ein wörtlicher Ausschnitt aus der QUELLE sein, keine Paraphrase.
 Assistant-Erzählungen sind keine bestätigten Weltveränderungen.
@@ -117,8 +128,10 @@ def enqueue(
     conversation: Conversation,
     message: Message,
     sources: list[Message] | None = None,
+    recipient_id: str | None = None,
+    simulation_id: str | None = None,
 ) -> ExtractionJob | None:
-    if not event_settings(db, conversation.world_id).enabled:
+    if not simulation_id and not event_settings(db, conversation.world_id).enabled:
         return None
     sources = sources or [message]
     covered = []
@@ -131,6 +144,7 @@ def enqueue(
                 ExtractionJobSource.message_id == source.id,
                 ExtractionJobSource.revision == source.revision,
                 ExtractionJob.status != "invalidated",
+                ExtractionJob.recipient_id == recipient_id,
             )
         )
         if existing:
@@ -140,7 +154,13 @@ def enqueue(
     if not fresh:
         return covered[-1]
     key = sha256(
-        (EXTRACTOR_VERSION + ":" + ":".join(f"{m.id}/{m.revision}" for m in fresh)).encode()
+        (
+            EXTRACTOR_VERSION
+            + ":"
+            + (recipient_id or "")
+            + ":"
+            + ":".join(f"{m.id}/{m.revision}" for m in fresh)
+        ).encode()
     ).hexdigest()
     existing = db.scalar(select(ExtractionJob).where(ExtractionJob.dedup_key == key))
     if existing:
@@ -151,6 +171,9 @@ def enqueue(
         message_id=message.id,
         message_revision=message.revision,
         dedup_key=key,
+        recipient_id=recipient_id,
+        simulation_id=simulation_id,
+        allow_auto_retry=not simulation_id,
     )
     db.add(job)
     db.flush()
@@ -227,13 +250,16 @@ def extraction_context(
     message: Message,
     settings: ExtractionRuntime,
     sources: list[Message] | None = None,
+    recipient_id: str | None = None,
 ):
     conversation = db.get(Conversation, message.conversation_id)
     if conversation is None:
         raise ProviderError("Gespräch der Extraktionsquelle fehlt.")
-    recipient = db.get(Character, conversation.character_id)
+    recipient = db.get(Character, recipient_id or conversation.character_id)
     if recipient is None:
         raise ProviderError("Empfänger der Extraktion fehlt.")
+    if any(not can_hear(db, row, recipient.id) for row in sources or [message]):
+        raise ProviderError("Extraktionsquelle war für den Empfänger nicht wahrnehmbar.")
     directory = [
         {"id": row.id, "name": row.name}
         for row in db.scalars(select(Character).where(Character.world_id == conversation.world_id))
@@ -287,12 +313,27 @@ def extraction_context(
             "revision": recipient.revision,
             "state": recipient.state,
             "writable_keys": list(recipient.state),
+            "location_id": recipient.location_id,
+            "destination_id": recipient.destination_id,
+            "travel_status": recipient.travel_status,
         },
         "source": source_data(message),
         "source_messages": [source_data(row) for row in sources],
         "character_names_only": directory,
         "outgoing_relationships": relations,
     }
+    if conversation.kind != "single":
+        from .models import Location
+
+        data["visible_locations"] = [
+            {"id": row.id, "name": row.name}
+            for row in db.scalars(select(Location).where(Location.world_id == recipient.world_id))
+        ]
+        data["heard_participants"] = [
+            {"id": row.id, "name": row.name, "revision": row.revision}
+            for row in db.scalars(select(Character).where(Character.world_id == recipient.world_id))
+            if can_hear(db, message, row.id)
+        ]
     messages = [
         {"role": "system", "content": PROMPT + json.dumps(ExtractionOutput.model_json_schema())},
         {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
@@ -352,7 +393,7 @@ async def run_job(db: Session, job_id: str, provider):
     job = db.get(ExtractionJob, job_id)
     if not job or job.status != "pending":
         return
-    if not event_settings(db, job.world_id).enabled:
+    if not job.simulation_id and not event_settings(db, job.world_id).enabled:
         return
     claimed = db.execute(
         update(ExtractionJob)
@@ -388,6 +429,8 @@ async def run_job(db: Session, job_id: str, provider):
                 return
             signature = [(m.id, m.revision) for m in sources]
             runtime = runtime or resolve_extraction_settings(db)
+            if job.simulation_id:
+                runtime = replace(runtime, auto_retry=False, structured_output="text")
             detail.update(
                 {
                     "model": runtime.model,
@@ -400,7 +443,7 @@ async def run_job(db: Session, job_id: str, provider):
                 raise ProviderError(
                     "Der konfigurierte Anbieter unterstützt keine Ereignisextraktion."
                 )
-            context = extraction_context(db, sources[0], runtime, sources)
+            context = extraction_context(db, sources[0], runtime, sources, job.recipient_id)
             snapshot = json.loads(context[1]["content"])
             revisions = {
                 ("character", snapshot["recipient_id"]): snapshot["recipient_state"]["revision"],
@@ -449,7 +492,7 @@ async def run_job(db: Session, job_id: str, provider):
                 job.status = "invalidated"
                 db.commit()
                 return
-            if not event_settings(db, job.world_id).enabled:
+            if not job.simulation_id and not event_settings(db, job.world_id).enabled:
                 raise ProviderError("Extraktion wurde während der Verarbeitung deaktiviert.")
             with db.begin_nested():
                 events = []
@@ -482,7 +525,20 @@ async def run_job(db: Session, job_id: str, provider):
                         raise HTTPException(
                             422, "Quellennachricht gehört nicht zum Gesprächswechsel."
                         )
-                    events.append(create_event(db, job.world_id, event, source))
+                    if event.recipient_id and event.recipient_id != snapshot["recipient_id"]:
+                        raise HTTPException(422, "Falscher Extraktionsempfänger.")
+                    event = event.model_copy(update={"recipient_id": job.recipient_id})
+                    simulation = (
+                        db.get(Simulation, job.simulation_id) if job.simulation_id else None
+                    )
+                    override = (
+                        "protected"
+                        if simulation and simulation.event_mode == "observe"
+                        else "confirm"
+                        if simulation and simulation.event_mode == "confirm"
+                        else None
+                    )
+                    events.append(create_event(db, job.world_id, event, source, override))
                 job.event_ids = [event.id for event in events]
                 job.status, job.error = "complete", ""
                 detail["status"] = "complete"
@@ -522,6 +578,7 @@ async def run_job(db: Session, job_id: str, provider):
             can_retry = (
                 runtime is not None
                 and runtime.auto_retry
+                and job.allow_auto_retry
                 and extraction_provider_settings(db).auto_retry
                 and retryable
                 and job.attempts == 1

@@ -1,5 +1,6 @@
 """Validated proposals and reversible world mutations; callers own the transaction."""
 
+import re
 from copy import deepcopy
 from typing import NoReturn
 
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from .conversations import can_hear
 from .event_bindings import (
     reject_relationship_state_aliases,
     relationship_binding,
@@ -15,12 +17,14 @@ from .event_bindings import (
 )
 from .event_schemas import (
     ArchiveOperation,
+    ClockOperation,
     EventInput,
     KnowledgeOperation,
     LocationOperation,
     RelationshipOperation,
     RelationshipValue,
     StateOperation,
+    TransferOperation,
 )
 from .models import (
     Character,
@@ -40,7 +44,10 @@ from .models import (
     Location,
     Message,
     Relationship,
+    Simulation,
+    SimulationDependency,
     World,
+    WorldClock,
     now,
 )
 from .schemas import Attribute
@@ -52,6 +59,7 @@ ENTITY_MODELS = {
     "location": Location,
     "relationship": Relationship,
     "knowledge": Knowledge,
+    "clock": WorldClock,
 }
 
 
@@ -61,7 +69,7 @@ def fail(detail: str, status: int = 422) -> NoReturn:
 
 def entity(db: Session, kind: str, item_id: str, world_id: str):
     row = db.get(ENTITY_MODELS[kind], item_id)
-    if row is None or (row.id if kind == "world" else row.world_id) != world_id:
+    if row is None or (row.id if kind in {"world", "clock"} else row.world_id) != world_id:
         fail("Ereignisreferenz fehlt oder gehört zu einer anderen Welt")
     return row
 
@@ -107,9 +115,8 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
     if body.location_id:
         entity(db, "location", body.location_id, world_id)
     conversation = db.get(Conversation, message.conversation_id) if message else None
-    own_speech = bool(
-        message and conversation and message.speaker_character_id == conversation.character_id
-    )
+    recipient_id = body.recipient_id or (conversation.character_id if conversation else None)
+    own_speech = bool(message and conversation and message.speaker_character_id == recipient_id)
     if message:
         if not conversation or conversation.world_id != world_id or message.status != "complete":
             fail("Nur gespeicherte vollständige Nachrichten dürfen Ereignisse auslösen")
@@ -117,6 +124,8 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
             fail("Vorschlag benötigt ein wörtliches Quellenzitat aus der Nachricht")
         if message.speaker_character_id:
             entity(db, "character", message.speaker_character_id, world_id)
+        if not recipient_id or not can_hear(db, message, recipient_id):
+            fail("Empfänger hat diese Nachricht nicht wahrgenommen")
     seen_targets: set[tuple[str, str]] = set()
     corrected_ids: set[str] = set()
     for operation in body.operations:
@@ -126,7 +135,7 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
             if operation.subject_id:
                 entity(db, "character", operation.subject_id, world_id)
             if conversation:
-                if operation.character_id != conversation.character_id:
+                if operation.character_id != recipient_id:
                     fail("Extraktion darf nur den Wissensstand des Gesprächsempfängers ändern")
                 if operation.kind not in {"received", "memory", "belief", "suspicion", "rumor"}:
                     fail(
@@ -135,7 +144,11 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
                     )
                 if operation.kind == "received" and operation.confidence > 50:
                     fail("Eine erhaltene Behauptung ist nicht verifiziert; maximal 50 % Vertrauen")
-                if operation.kind == "received" and operation.content not in message.content:
+                if (
+                    message
+                    and operation.kind == "received"
+                    and operation.content not in message.content
+                ):
                     fail("Erhaltene Informationen müssen die originale Quellenaussage wiedergeben")
             for old_id in operation.supersedes + operation.contradicts:
                 old = entity(db, "knowledge", old_id, world_id)
@@ -158,6 +171,8 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
                 if isinstance(operation, RelationshipOperation)
                 else "knowledge"
                 if isinstance(operation, ArchiveOperation)
+                else "clock"
+                if isinstance(operation, ClockOperation)
                 else "character"
             )
             target = entity(db, kind, operation.entity_id, world_id)
@@ -167,12 +182,49 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
             seen_targets.add(key)
             if target.revision != operation.revision:
                 fail("Vorschlag beruht auf einer veralteten Objektrevision", 409)
-            if conversation:
-                if kind == "character" and target.id != conversation.character_id:
+            if isinstance(operation, ClockOperation) and message:
+                fail("Die Weltzeit darf nicht aus einer Modellbehauptung geändert werden")
+            if isinstance(operation, TransferOperation):
+                receiver = entity(db, "character", operation.target_id, world_id)
+                if receiver.id == target.id or receiver.revision != operation.target_revision:
+                    fail("Empfänger oder Revision der Übergabe ist ungültig", 409)
+                receiver_key = ("character", receiver.id)
+                if receiver_key in seen_targets:
+                    fail("Übergabe überschneidet sich mit einer weiteren Charakteränderung")
+                seen_targets.add(receiver_key)
+                transfer_values(target, receiver, operation.item)
+                if (
+                    target.location_id is None
+                    or receiver.location_id != target.location_id
+                    or target.travel_status != "present"
+                    or receiver.travel_status != "present"
+                ):
+                    fail("Gegenstände können nur zwischen anwesenden Charakteren übergeben werden")
+                if message and (
+                    message.speaker_character_id != target.id
+                    or not can_hear(db, message, receiver.id)
+                    or operation.item not in body.evidence_quote
+                    or receiver.name not in body.evidence_quote
+                    or not re.search(
+                        r"\b(?:gebe|gibt|übergebe|übergibt|gives|hands)\b",
+                        body.evidence_quote,
+                        re.I,
+                    )
+                    or re.search(
+                        r"\b(?:nicht|will|werde|möchte|soll|would|might)\b",
+                        body.evidence_quote,
+                        re.I,
+                    )
+                ):
+                    fail("Eine Übergabe benötigt die belegte ausgeführte Handlung des Besitzers")
+            if conversation and message:
+                if kind == "character" and target.id != recipient_id:
                     fail("Kein Zugriff auf den privaten Zustand anderer Charaktere")
-                if kind == "relationship" and target.source_id != conversation.character_id:
+                if kind == "relationship" and target.source_id != recipient_id:
                     fail("Keine Änderung fremder Beziehungseinschätzungen")
                 if isinstance(operation, StateOperation):
+                    if "Inventar" in operation.values:
+                        fail("Inventaränderungen benötigen eine validierte transfer-Operation")
                     if kind == "character":
                         reject_relationship_state_aliases(db, target, body.evidence_quote)
                     state_binding(
@@ -182,6 +234,44 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
                         own_speech,
                         operation.value_quotes,
                     )
+                if isinstance(operation, LocationOperation):
+                    if (
+                        operation.travel_status == "present"
+                        and operation.location_id != target.location_id
+                    ):
+                        if (
+                            target.travel_status != "traveling"
+                            or target.destination_id != operation.location_id
+                        ):
+                            fail("Ankunft benötigt zuvor eine Reise zu genau diesem Zielort")
+                    if operation.travel_status == "traveling" and (
+                        not operation.destination_id
+                        or operation.location_id != target.location_id
+                        or operation.destination_id == target.location_id
+                    ):
+                        fail("Reisebeginn benötigt vorhandenen Ausgangs- und anderen Zielort")
+                    if (
+                        message.speaker_character_id != target.id
+                        or re.search(
+                            r"\b(?:will|werde|möchte|soll|nicht|would|might|morgen)\b",
+                            body.evidence_quote,
+                            re.I,
+                        )
+                        or not re.search(
+                            r"\b(?:verlasse|verlässt|reise|reist|beginne|beginnt|betrete|betritt|"
+                            r"erreiche|erreicht|arrive|arrives|leave|leaves|travel|travels)\b",
+                            body.evidence_quote,
+                            re.I,
+                        )
+                    ):
+                        fail(
+                            "Ortsänderung benötigt eine ausgeführte Handlung des aktiven Charakters"
+                        )
+                    destination_id = operation.destination_id or operation.location_id
+                    if destination_id:
+                        destination = entity(db, "location", destination_id, world_id)
+                        if destination.name.casefold() not in body.evidence_quote.casefold():
+                            fail("Zielort ist im Handlungsbeleg nicht genannt")
             if isinstance(operation, RelationshipOperation):
                 if operation.target_id is not None and operation.target_id != target.target_id:
                     fail("Zielcharakter passt nicht zur gerichteten Beziehung")
@@ -207,11 +297,11 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
                         fail("Referenzattribute sind keine unterstützte Beziehungsoperation")
                     resolved.append(attribute)
                 operation.attributes[:] = resolved
-                if conversation:
+                if conversation and recipient_id:
                     relationship_binding(
                         db,
                         target,
-                        entity(db, "character", conversation.character_id, world_id),
+                        entity(db, "character", recipient_id, world_id),
                         operation.target_id,
                         resolved,
                         operation.attribute_quotes,
@@ -235,7 +325,28 @@ def operation_class(operation) -> str:
         return "knowledge"
     if isinstance(operation, StateOperation):
         return operation.entity_type
+    if isinstance(operation, ClockOperation):
+        return "clock"
     return "relationship" if isinstance(operation, RelationshipOperation) else "character"
+
+
+def transfer_values(giver: Character, receiver: Character, item: str) -> tuple[dict, dict]:
+    held = giver.state.get("Inventar", [])
+    received = receiver.state.get("Inventar", [])
+    if (
+        not isinstance(held, list)
+        or not isinstance(received, list)
+        or any(not isinstance(value, str) for value in held + received)
+    ):
+        fail("Für Übergaben Inventar im Editor als Liste von Gegenstandsnamen anlegen")
+    if item not in held:
+        fail("Übergabe nicht ausführbar: Der Charakter besitzt diesen Gegenstand nicht")
+    remaining = list(held)
+    remaining.remove(item)
+    return (
+        {**giver.state, "Inventar": remaining},
+        {**receiver.state, "Inventar": [*received, item]},
+    )
 
 
 def preview_operations(db: Session, world_id: str, body: EventInput) -> list[dict]:
@@ -253,6 +364,19 @@ def preview_operations(db: Session, world_id: str, body: EventInput) -> list[dic
             )
             continue
         row = entity(db, kind, operation.entity_id, world_id)
+        if isinstance(operation, TransferOperation):
+            receiver = entity(db, "character", operation.target_id, world_id)
+            giver_state, receiver_state = transfer_values(row, receiver, operation.item)
+            for person, state in ((row, giver_state), (receiver, receiver_state)):
+                preview.append(
+                    {
+                        "entity_type": "character",
+                        "entity_id": person.id,
+                        "before": {"state": deepcopy(person.state)},
+                        "after": {"state": state},
+                    }
+                )
+            continue
         if isinstance(operation, StateOperation):
             after = {"state": {**row.state, **operation.values}}
         elif isinstance(operation, RelationshipOperation):
@@ -277,6 +401,23 @@ def decide_mode(db: Session, world_id: str, body: EventInput, message: Message |
     modes = ["auto"]
     reasons = []
     for operation in body.operations:
+        witnessed_claim = bool(
+            message
+            and body.recipient_id
+            and isinstance(operation, KnowledgeOperation)
+            and operation.kind == "received"
+            and message.speaker_character_id != body.recipient_id
+            and operation.content in message.content
+        )
+        validated_action = bool(
+            message
+            and body.recipient_id
+            and body.recipient_id == message.speaker_character_id
+            and isinstance(
+                operation,
+                (TransferOperation, LocationOperation, StateOperation, RelationshipOperation),
+            )
+        )
         kind = operation_class(operation)
         protected = kind in {"world", "location"} or (
             isinstance(operation, KnowledgeOperation) and operation.kind == "fact"
@@ -306,7 +447,7 @@ def decide_mode(db: Session, world_id: str, body: EventInput, message: Message |
         elif (
             message
             and (
-                message.role != "user"
+                (message.role != "user" and not witnessed_claim and not validated_action)
                 or message.content.rstrip().endswith("?")
                 or body.confidence < 60
                 or isinstance(operation, KnowledgeOperation)
@@ -317,6 +458,19 @@ def decide_mode(db: Session, world_id: str, body: EventInput, message: Message |
             mode = "confirm"
         modes.append(mode)
         reasons.append(f"{kind}: {mode}")
+    simulation = (
+        db.scalar(
+            select(Simulation).where(
+                Simulation.conversation_id == message.conversation_id,
+            )
+        )
+        if message
+        else None
+    )
+    if simulation and simulation.event_mode != "rules":
+        mode = "protected" if simulation.event_mode == "observe" else "confirm"
+        modes.append(mode)
+        reasons.append("Simulationsfreigabe: " + mode)
     return max(modes, key={"auto": 0, "confirm": 1, "protected": 2}.__getitem__), "; ".join(reasons)
 
 
@@ -425,11 +579,18 @@ def apply_event(db: Session, event: Event, revision: int, actor: str):
     # Validate current references and revisions again, not just extraction-time input.
     validate_event(db, event.world_id, body, None)
     sources = list(db.scalars(select(EventSource).where(EventSource.event_id == event.id)))
+    if sources:
+        body = body.model_copy(update={"recipient_id": sources[0].recipient_id})
     for source in sources:
         source_message = db.get(Message, source.message_id) if source.message_id else None
         if not source_message or source_message.revision != source.message_revision:
             fail("Die Quelle wurde geändert oder gelöscht", 409)
-        source_body = body.model_copy(update={"evidence_quote": source.quote})
+        source_body = body.model_copy(
+            update={
+                "evidence_quote": source.quote,
+                "recipient_id": source.recipient_id,
+            }
+        )
         validate_event(db, event.world_id, source_body, source_message)
     current_mode, reason = decide_mode(
         db,
@@ -502,6 +663,12 @@ def apply_event(db: Session, event: Event, revision: int, actor: str):
         else:
             kind = operation_class(operation)
             row = entity(db, kind, operation.entity_id, event.world_id)
+            if isinstance(operation, TransferOperation):
+                receiver = entity(db, "character", operation.target_id, event.world_id)
+                giver_state, receiver_state = transfer_values(row, receiver, operation.item)
+                record_change(db, event, "character", row, {"state": giver_state})
+                record_change(db, event, "character", receiver, {"state": receiver_state})
+                continue
             if isinstance(operation, StateOperation):
                 values = {"state": {**row.state, **operation.values}}
             elif isinstance(operation, ArchiveOperation):
@@ -518,15 +685,27 @@ def apply_event(db: Session, event: Event, revision: int, actor: str):
     return event
 
 
-def create_event(db: Session, world_id: str, body: EventInput, message: Message | None = None):
+def create_event(
+    db: Session,
+    world_id: str,
+    body: EventInput,
+    message: Message | None = None,
+    mode_override: str | None = None,
+):
     validate_event(db, world_id, body, message)
     mode, reason = decide_mode(db, world_id, body, message)
+    if mode_override in {"confirm", "protected"} and mode != "protected":
+        mode = mode_override
+        reason = "Simulationsfreigabe: " + mode
     event = Event(
         world_id=world_id,
         event_type=body.event_type,
         description=body.description,
         occurred_at=body.occurred_at or (message.created_at if message else now()),
         source="conversation" if message else "manual",
+        world_minute=message.world_minute
+        if message
+        else (clock.elapsed_minutes if (clock := db.get(WorldClock, world_id)) else None),
         confidence=body.confidence,
         location_id=body.location_id,
         status="protected" if mode == "protected" else "proposed",
@@ -546,6 +725,7 @@ def create_event(db: Session, world_id: str, body: EventInput, message: Message 
     if message:
         db.add(
             EventSource(
+                recipient_id=body.recipient_id,
                 event_id=event.id,
                 message_id=message.id,
                 message_revision=message.revision,
@@ -585,6 +765,9 @@ def sync_proposal_references(
             add_target(db, event.id, kind, operation.entity_id)
             if kind == "character":
                 participants.add(operation.entity_id)
+                if isinstance(operation, TransferOperation):
+                    participants.add(operation.target_id)
+                    add_target(db, event.id, "character", operation.target_id)
             elif kind == "relationship":
                 relationship = entity(db, kind, operation.entity_id, event.world_id)
                 participants.update((relationship.source_id, relationship.target_id))
@@ -603,6 +786,16 @@ def assert_not_referenced(db: Session, world_id: str, knowledge_id: str):
 
 
 def undo_event(db: Session, event: Event, revision: int, actor="user"):
+    if db.scalar(
+        select(SimulationDependency.turn_id).where(
+            SimulationDependency.event_id == event.id,
+        )
+    ):
+        fail(
+            "Spätere Simulationsrunden nutzten diesen Weltzustand. "
+            "Sichere Rückabwicklung nicht möglich.",
+            409,
+        )
     if event.status != "applied":
         fail("Nur angewendete Ereignisse können rückgängig gemacht werden", 409)
     changes = list(

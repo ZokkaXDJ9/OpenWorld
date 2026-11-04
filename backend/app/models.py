@@ -1,7 +1,19 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -81,6 +93,14 @@ class Conversation(Base):
     character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(200), default="Neues Gespräch")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    kind: Mapped[str] = mapped_column(String(20), default="single", server_default="single")
+    scene: Mapped[str] = mapped_column(Text, default="", server_default="")
+    scene_location_id: Mapped[str | None] = mapped_column(
+        ForeignKey("locations.id", ondelete="RESTRICT"), nullable=True
+    )
+    communication: Mapped[str] = mapped_column(
+        String(30), default="in_person", server_default="in_person"
+    )
 
 
 class Message(Base):
@@ -97,6 +117,107 @@ class Message(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     speaker_character_id: Mapped[str | None] = mapped_column(
         ForeignKey("characters.id", ondelete="SET NULL"), nullable=True
+    )
+    speaker_type: Mapped[str] = mapped_column(String(20), default="human", server_default="human")
+    world_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ConversationParticipant(Base):
+    __tablename__ = "conversation_participants"
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    character_id: Mapped[str] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class MessageAudience(Base):
+    __tablename__ = "message_audience"
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    character_id: Mapped[str] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), primary_key=True
+    )
+    perception: Mapped[str] = mapped_column(String(20), default="heard")
+
+
+class WorldClock(Base):
+    __tablename__ = "world_clocks"
+    id: Mapped[str] = mapped_column(ForeignKey("worlds.id", ondelete="CASCADE"), primary_key=True)
+    elapsed_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    minutes_per_day: Mapped[int] = mapped_column(Integer, default=1440)
+    epoch_label: Mapped[str] = mapped_column(String(200), default="Tag 1")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Simulation(Base):
+    __tablename__ = "simulations"
+    __table_args__ = (
+        Index(
+            "uq_running_simulation_world",
+            "world_id",
+            unique=True,
+            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    world_id: Mapped[str] = mapped_column(ForeignKey("worlds.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), unique=True
+    )
+    title: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="created", index=True)
+    max_rounds: Mapped[int] = mapped_column(Integer, default=20)
+    completed_rounds: Mapped[int] = mapped_column(Integer, default=0)
+    run_until: Mapped[int] = mapped_column(Integer, default=0)
+    max_calls: Mapped[int] = mapped_column(Integer, default=100)
+    calls_used: Mapped[int] = mapped_column(Integer, default=0)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=250000)
+    tokens_reserved: Mapped[int] = mapped_column(Integer, default=0)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    seconds_used: Mapped[float] = mapped_column(Float, default=0)
+    minutes_per_round: Mapped[int] = mapped_column(Integer, default=1)
+    event_mode: Mapped[str] = mapped_column(String(20), default="rules")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    stop_reason: Mapped[str] = mapped_column(String(100), default="")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SimulationTurn(Base):
+    __tablename__ = "simulation_turns"
+    __table_args__ = (UniqueConstraint("simulation_id", "number"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    simulation_id: Mapped[str] = mapped_column(
+        ForeignKey("simulations.id", ondelete="CASCADE"), index=True
+    )
+    number: Mapped[int] = mapped_column(Integer)
+    character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="RESTRICT"))
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="generating")
+    error: Mapped[str] = mapped_column(Text, default="")
+    clock_event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("events.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SimulationDependency(Base):
+    __tablename__ = "simulation_dependencies"
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("simulation_turns.id", ondelete="CASCADE"), primary_key=True
+    )
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("events.id", ondelete="CASCADE"), primary_key=True, index=True
     )
 
 
@@ -145,6 +266,7 @@ class Event(Base):
         ForeignKey("locations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    world_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class EventParticipant(Base):
@@ -160,6 +282,9 @@ class EventParticipant(Base):
 class EventSource(Base):
     __tablename__ = "event_sources"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    recipient_id: Mapped[str | None] = mapped_column(
+        ForeignKey("characters.id", ondelete="SET NULL"), nullable=True
+    )
     event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), index=True)
     message_id: Mapped[str | None] = mapped_column(
         ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
@@ -178,9 +303,7 @@ class EventSource(Base):
 class EventProposal(Base):
     __tablename__ = "event_proposals"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    event_id: Mapped[str] = mapped_column(
-        ForeignKey("events.id", ondelete="CASCADE"), unique=True
-    )
+    event_id: Mapped[str] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"), unique=True)
     operations: Mapped[list] = mapped_column(JSON)
     preview: Mapped[list] = mapped_column(JSON, default=list)
     mode: Mapped[str] = mapped_column(String(20))
@@ -262,6 +385,13 @@ class ExtractionJob(Base):
     event_ids: Mapped[list] = mapped_column(JSON, default=list)
     diagnostics: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    recipient_id: Mapped[str | None] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), nullable=True
+    )
+    simulation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("simulations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    allow_auto_retry: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
 
 class ExtractionJobSource(Base):

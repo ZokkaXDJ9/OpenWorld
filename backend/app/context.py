@@ -4,6 +4,7 @@ import tiktoken
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from .conversations import can_hear, participants, present
 from .memory import compact_content, retrieve
 from .models import (
     Character,
@@ -15,6 +16,7 @@ from .models import (
     Message,
     Relationship,
     World,
+    WorldClock,
 )
 
 SYSTEM = """Du verkoerperst den ausgewaehlten fiktionalen Charakter in einer Unterhaltung.
@@ -55,8 +57,12 @@ def build_context(
     context_window: int,
     output_tokens: int,
     exclude_message_id: str | None = None,
+    speaker_id: str | None = None,
 ) -> tuple[list[dict[str, str]], int]:
-    character = db.get(Character, conversation.character_id)
+    character_id = speaker_id or conversation.character_id
+    if character_id not in {p.id for p in participants(db, conversation)}:
+        raise ValueError("Sprecher ist kein aktiver Gesprächsteilnehmer")
+    character = db.get(Character, character_id)
     world = db.get(World, conversation.world_id)
     if character is None or world is None:
         raise ValueError("Gespräch verweist auf fehlende Objekte")
@@ -112,6 +118,22 @@ def build_context(
         "current_location_path": locations,
         "relationships_from_character": relationships,
     }
+    if conversation.kind != "single":
+        clock = db.get(WorldClock, world.id)
+        mandatory["scene"] = {
+            "description": conversation.scene,
+            "location_id": conversation.scene_location_id,
+            "communication": conversation.communication,
+            "participants": [{"id": p.id, "name": p.name} for p in present(db, conversation)],
+            "world_minutes": clock.elapsed_minutes if clock else 0,
+            "rules": (
+                "Antworte nur als der aktive Charakter: gesprochene Worte und äußerlich "
+                "beobachtbare Handlungen. Keine privaten Gedanken oder Reasoning-Texte. "
+                "Andere Figuren nicht steuern. Fremde Aussagen sind Behauptungen, keine "
+                "bestätigten Weltveränderungen. Nur der gelieferte aktuelle Zustand ist gültig. "
+                "Ungenehmigte Übergaben, Reisen oder Vorschläge sind noch nicht geschehen."
+            ),
+        }
     encoding = tiktoken.get_encoding("cl100k_base")
 
     def tokens(message: dict[str, str]) -> int:
@@ -133,12 +155,33 @@ def build_context(
     )
     if exclude_message_id:
         history = [message for message in history if message.id != exclude_message_id]
+    if conversation.kind != "single":
+        history = [message for message in history if can_hear(db, message, character.id)]
+
+    def history_message(item: Message) -> dict[str, str]:
+        if conversation.kind == "single":
+            return {"role": item.role, "content": item.content}
+        speaker = (
+            db.get(Character, item.speaker_character_id) if item.speaker_character_id else None
+        )
+        return {
+            "role": "assistant" if item.speaker_character_id == character.id else "user",
+            "content": json.dumps(
+                {
+                    "speaker_id": item.speaker_character_id,
+                    "speaker": speaker.name if speaker else "Benutzer",
+                    "statement_not_verified_fact": item.content,
+                },
+                ensure_ascii=False,
+            ),
+        }
+
     budget = context_window - output_tokens - 256
     messages = [system]
     used = tokens(system)
     latest = None
     if history:
-        latest = {"role": history[-1].role, "content": history[-1].content}
+        latest = history_message(history[-1])
         used += tokens(latest)
         if used > budget:
             raise ContextTooLarge(
@@ -150,7 +193,7 @@ def build_context(
     # Reserve recent turns before retrieving older personal memories.
     recent: list[dict[str, str]] = []
     for item in reversed(history[:-1]):
-        message = {"role": item.role, "content": item.content}
+        message = history_message(item)
         cost = tokens(message)
         if used + cost > budget * 0.70:
             break

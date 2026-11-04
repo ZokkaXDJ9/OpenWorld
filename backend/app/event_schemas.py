@@ -107,17 +107,38 @@ class ArchiveOperation(StrictModel):
     revision: int = Field(ge=1)
 
 
+class TransferOperation(StrictModel):
+    op: Literal["transfer"] = "transfer"
+    entity_id: str
+    revision: int = Field(ge=1)
+    target_id: str
+    target_revision: int = Field(ge=1)
+    item: str = Field(min_length=1, max_length=200)
+
+
+class ClockOperation(StrictModel):
+    op: Literal["clock"] = "clock"
+    entity_id: str
+    revision: int = Field(ge=1)
+    elapsed_minutes: int = Field(ge=0, le=1000000000)
+    minutes_per_day: int = Field(default=1440, ge=60, le=100000)
+    epoch_label: str = Field(default="Tag 1", min_length=1, max_length=200)
+
+
 Operation = Annotated[
     KnowledgeOperation
     | StateOperation
     | RelationshipOperation
     | LocationOperation
-    | ArchiveOperation,
+    | ArchiveOperation
+    | TransferOperation
+    | ClockOperation,
     Field(discriminator="op"),
 ]
 
 
 class EventInput(StrictModel):
+    recipient_id: str | None = Field(default=None, max_length=36)
     source_message_id: str | None = Field(default=None, max_length=36)
     event_type: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
     description: str = Field(min_length=1, max_length=10000)

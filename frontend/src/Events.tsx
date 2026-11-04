@@ -133,6 +133,10 @@ function ProposalEditor({ event, worldId, locations, saved, report }: {
         })}><option value="">Unbekannt</option>{locations.map(location =>
           <option key={location.id} value={location.id}>{location.name}</option>)}</select></Field>}
       {operation.op === 'archive' && <p>Erinnerung aus dem aktuellen Wissensstand entfernen.</p>}
+      {operation.op === 'transfer' && <p>Gegenstand übergeben: {operation.item}.
+        Besitzer und Empfänger bleiben fest an den validierten Vorschlag gebunden.</p>}
+      {operation.op === 'clock' && <p>Weltzeit: {operation.elapsed_minutes} Minuten,
+        {operation.minutes_per_day} Minuten pro Tag.</p>}
     </div>)}
     <button type="button" className="button" disabled={busy || !description.trim()} onClick={async () => {
       setBusy(true)
@@ -272,6 +276,9 @@ export function Events({ worldId, characters, locations, report }: {
               operation.attributes.map(a => <p key={a.name}>{a.name}: neuer Wert {human(a.value)}</p>) :
               operation.op === 'state' ? <p>Zustand: {human(operation.values)}</p> :
                 operation.op === 'archive' ? <p>Erinnerung entfernen</p> :
+                  operation.op === 'transfer' ? <p>Übergabe: {operation.item} ·
+                    {characters.find(c => c.id === operation.entity_id)?.name} → {characters.find(c => c.id === operation.target_id)?.name}</p> :
+                  operation.op === 'clock' ? <p>Weltzeit: {operation.elapsed_minutes} Minuten · {operation.epoch_label}</p> :
                   <p>Aufenthaltsort: {locations.find(l => l.id === operation.location_id)?.name ?? 'Unbekannt'}</p>}
           </div>)}</div>
         {selected.mutations.map(mutation => <div key={mutation.id} className="notice">

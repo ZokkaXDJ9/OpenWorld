@@ -62,6 +62,10 @@ ohne einen zweiten Backendprozess zu starten.
   historischem Ereigniszeitpunkt und vollständig lokaler hybrider Erinnerungssuche.
 - Bewusst aktivierbare Ereigniserkennung nach gespeicherten Chatnachrichten,
   persistente lokale Aufträge, sichtbare Fehler und begrenzte Wiederholungen.
+- Mehrcharaktergespräche mit individuellen Sprecherkontexten und gespeicherten Zuhörern.
+- Begrenzte autonome Simulationen mit Pause, Fortsetzung, Eingriff und fiktiver Weltzeit.
+- Gerichteter React-Flow-Beziehungsgraph, weiterhin derselbe Editor und dieselben Daten.
+- Versionierter JSON-Weltexport und transaktionaler Import ohne Überschreiben.
 
 Alle aktiven Editoraktionen schreiben in die Datenbank. Der
 Produktiv-Chat ruft den konfigurierten Anbieter auf; ohne Modell gibt es eine
@@ -88,6 +92,10 @@ OpenWorld\
       extraction.py     Quellengebundene Extraktion und persistente Aufträge
       extraction_settings.py Separate Verbindung, Budgets und Anbieterprofile
       event_worker.py   Lokaler, sequenzieller Hintergrunddienst
+      conversations.py  Gruppen, Anwesenheit und Nachrichtenzuhörer
+      simulation.py     Persistente Runden, Budgets, Wiederaufnahme und Modellaufrufe
+      simulation_api.py Simulation, Gruppengespräche und Weltzeit
+      portability.py    Versionierte weltbezogene JSON-Snapshots ohne Providerdaten
       memory.py         Hybrides lokales Retrieval und Originalsatzauszüge
       serialization.py Gemeinsame Serialisierung mit UTC-Zeitstempeln
     migrations\         Versioniertes Datenbankschema
@@ -283,8 +291,8 @@ und Netzwerkfehler lösen keine automatische Generierungswiederholung aus.
 Nach jedem vollständig gespeicherten Gesprächswechsel werden **beide Nachrichten
 gemeinsam in einem Auftrag** analysiert. Die Quellen besitzen unabhängige Rollen,
 Sprecheridentitäten und Revisionen; die Gruppierung setzt keine Nutzernachricht
-voraus und ist damit auch für spätere KI-zu-KI-Wechsel verwendbar. Noch keine
-autonome Gesprächssteuerung. Reine, vollständig erkannte Gruß-/Dankesphrasen werden
+voraus. In Mehrcharaktergesprächen wird dagegen jede gehörte öffentliche Nachricht
+pro tatsächlichem Empfänger verarbeitet. Reine, vollständig erkannte Gruß-/Dankesphrasen werden
 konservativ ohne Modellaufruf als `skipped` protokolliert. Sobald zusätzlicher Inhalt
 vorliegt, wird nicht anhand einzelner Stichwörter aussortiert.
 
@@ -565,8 +573,8 @@ werden.
 Die Verschluesselung schuetzt nicht vor einem Angreifer mit Zugriff auf
 Datenbank **und** Schluesseldatei. Unter Windows passende NTFS-Berechtigungen fuer
 das Datenverzeichnis setzen; Backups mit Zugangsdaten ebenso schuetzen.
-Ein reines Weltdatenexportformat darf Providerdaten nicht enthalten.
-Aktuell gibt es noch keinen JSON-Exportbutton.
+Der JSON-Weltexport enthält keine Providerdaten. Er enthält jedoch bewusst die
+privaten fiktionalen Daten der ausgewählten Welt und muss entsprechend geschützt werden.
 
 Optionale Umgebungsvariablen:
 
@@ -703,24 +711,130 @@ Bestehendes Wissen wird als `legacy` markiert und **nicht** nachträglich verifi
 Migrationen vor dem Start ausführen und vorher die lokale Datenbank sichern.
 Ein Schema-Downgrade entfernt die neuen Phase-2-Verlaufsdaten und ist kein Daten-Undo.
 
+## Simulationen und Gruppengespräche
+
+Unter **Simulationen** mindestens zwei Charaktere und einen Szenenort auswählen.
+Vor-Ort-Gespräche benötigen anwesende Charaktere am selben Ort. Fernkommunikation
+ist eine ausdrückliche Alternative, kein stiller Ersatz für fehlende Anwesenheit.
+**Eine Runde ist ein Charakterbeitrag**, nicht eine vollständige Gesprächsrunde
+aller Teilnehmer. Die Auswahlreihenfolge bestimmt die zyklische Sprecherfolge.
+
+Anlegen startet noch keine Modellaufrufe. **Starten/Fortsetzen**, **1/5/20 Runden**
+oder eine eigene Zahl starten bewusst begrenzte Läufe. **Pause** unterbricht auch
+laufende Anfragen; unfertige Antworten werden nicht öffentlich gespeichert.
+**Abbrechen** beendet den Lauf dauerhaft. Ein Backend-Neustart pausiert laufende
+Simulationen; Fortsetzung erfolgt niemals automatisch. Bereits gespeicherte Beiträge
+werden nach Extraktionsfehlern nicht erneut generiert.
+
+Im angehaltenen Gespräch sind menschliche Eingriffe, direkte Ansprache und Änderungen
+der Szene/Teilnehmer möglich. Neue Teilnehmer erhalten keinen rückwirkenden Zugriff
+auf ungehörte Nachrichten. Jeder Sprecher erhält nur sein eigenes Profil, Wissen,
+ausgehende Beziehungen und die tatsächlich gehörte öffentliche Historie. Interne
+Reasoning-Kanäle und als Denktext markierte Ausgaben werden nicht veröffentlicht.
+Qwen-kompatible Erstzüge erhalten bei Bedarf einen technischen Sprechzug-Hinweis;
+dieser ist keine menschliche Äußerung und wird nicht in den Verlauf geschrieben.
+
+Nach einem Beitrag werden die persönlichen Extraktionsaufträge abgeschlossen, bevor
+der nächste Sprecher generiert wird. Gehörte Behauptungen sind persönliche `received`-
+Informationen mit höchstens 50 % Vertrauen, keine objektiven Fakten. **Nach Regeln**
+nutzt vorhandene Freigaben; **Bestätigen** verlangt mindestens Bestätigung; **Beobachten**
+erzeugt nur geschützte Vorschläge und verändert weder Wissen noch Uhr oder Zustand.
+Eine Simulation aktiviert nicht nebenbei die globale Erkennung für normale Chats.
+
+Die Gesprächsansicht zeigt die letzten 20 zugehörigen Ereignisse sowie die Gesamtzahlen
+übernommener Änderungen, ausstehender Bestätigungen und geschützter Vorschläge.
+Zeitfortschritte zählen ebenfalls dazu. **Details und Freigaben** öffnet die vollständige
+Ereignisprüfung; Vorschläge sind nicht mit bereits übernommenen Änderungen gleichzusetzen.
+
+Standardgrenzen: 20 Beiträge, 100 Modellanfragen, 250.000 geschätzte reservierte Tokens,
+600 Sekunden kumulierte Modellzeit. Jeder tatsächlich begonnene Chat-/Extraktionsaufruf
+wird vor dem Aufruf reserviert. Extraktionen verwenden keine automatische Wiederholung
+und keine versteckte Format-Aushandlung. Bewusstes Fortsetzen kann fehlgeschlagene
+Extraktionen innerhalb der Grenzen wiederholen, höchstens drei Versuche je Auftrag.
+Tokens sind konservative Eingabe-/Maximalausgabeschätzungen, keine tatsächliche
+Gesamtnutzung oder Kostenangabe. Nicht gemeldete Nutzung und Kosten bleiben unbekannt.
+Pro Welt läuft höchstens eine Simulation; der lokale Dienst arbeitet zusätzlich
+global sequenziell. Ein einzelner Uvicorn-Prozess bleibt Voraussetzung.
+
+**Gruppengespräche** erlauben menschliche Beiträge und einzeln ausgelöste Antworten
+ausgewählter Charaktere, ohne autonome Schleife. Normale Einzelchats bleiben separat.
+Gruppen-/Simulationsnachrichten sind unveränderlich; Korrekturen als neue Beiträge
+einfügen. Sichere Rücknahme eines Ereignisses wird verweigert, wenn spätere gespeicherte
+Simulationsbeiträge dessen Weltzustand bereits verwendet haben. Das ist bewusst
+konservativ; eine automatische Rückabwicklung ganzer Gesprächsketten gibt es nicht.
+
+### Gegenstände, Reisen und Zeit
+
+Übergaben verwenden ausschließlich `state["Inventar"]` als Liste exakter Gegenstandsnamen.
+Alte Freitextinventare werden nicht erraten oder automatisch umgewandelt. Besitzer muss
+den Gegenstand tatsächlich besitzen; Empfänger und Besitzer müssen am selben Ort
+anwesend sein. Beide Inventare ändern sich atomar über die Event Engine, mit Revisionen
+und Undo. Aussagen über Besitz erschaffen keine Gegenstände; Absichten führen keine
+Übergabe aus. Standard ist Bestätigung, automatische Handlungen benötigen eine bewusst
+gesetzte passende Freigaberegel und weiterhin gültige Belege.
+
+Reisen sind validierte Abreise-/Ankunftsereignisse. Ankunft an einem anderen Ort setzt
+eine zuvor gespeicherte Reise zu diesem Ziel voraus, keine direkte Modell-Teleportation.
+Reisegeschwindigkeit, Entfernungsberechnung und automatische Wegfindung sind noch nicht
+implementiert. Nicht mehr anwesende Charaktere nehmen nicht weiter am Vor-Ort-Gespräch teil.
+Die Weltuhr ist fiktive Zeit, unabhängig von UTC-Protokollzeiten. Standard: 1 Weltminute
+je vollständig verarbeiteter Runde; Tageslänge und Kalenderbeginn sind frei einstellbar.
+Manuelle Zeitänderungen werden als Ereignis gespeichert und verlangen eine Pause.
+Ein komplexes Kalender-/Termin- oder Tagesroutinensystem ist nicht enthalten.
+
+### Portables Weltformat v1
+
+**Welteditor → Welt exportieren** lädt JSON herunter; **Meine Welten → Welt importieren**
+liest es ein. Envelope:
+
+```json
+{"format":"openworld.world","version":1,"world_id":"UUID","tables":{}}
+```
+
+`tables` enthält vollständig die im Backend explizit erlaubten weltbezogenen Tabellen:
+Welt, Orte, Charaktere, Beziehungen, Wissen/Verknüpfungen, Chats/Nachrichten/Teilnehmer/
+Zuhörer, Ereignisse/Vorschläge/Quellen/Ziele/Mutationen/Audit/Freigaben, Weltuhr,
+Simulationen/Runden/Abhängigkeiten und Extraktionsaufträge/Quellenrevisionen.
+Stabile IDs, Revisionen und ISO-8601-Zeitstempel bleiben erhalten. Providerverbindungen,
+Schlüssel, lokale Modellüberschreibungen und detaillierte Laufzeitfehler bleiben lokal.
+Dies ist bewusst ein Weltexport, kein Backup der Programmeinstellungen.
+
+Export verlangt einen angehaltenen Weltbetrieb. Import prüft Formatversion, Felder,
+Typen, Ortszyklen und weltinterne Referenzen, bevor in einer Transaktion geschrieben
+wird. Eine vorhandene Identität wird abgelehnt, niemals überschrieben. Zum Rückimport
+derselben IDs eine andere/leere Installation verwenden; automatisches Zusammenführen
+oder Klonen mit neuen IDs ist nicht implementiert. Offene importierte Extraktionsaufträge
+werden angehalten und müssen bewusst erneut gestartet werden. Kein automatischer
+Simulationsstart nach Import. Grenzen: 100.000 Zeilen und 50 MB JSON.
+
+### Migration 0005 und lokaler Modelltest
+
+Die additive Migration ergänzt Gruppen, Zuhörer, Sprecherrollen, Weltzeit und persistente
+Simulationen. Bestehende Gespräche bleiben Einzelchats; ursprüngliche Spalten und Inhalte
+bleiben erhalten. SQLite-Referenzspalten werden ohne Neuanlage bestehender Tabellen
+ergänzt, um kaskadierende Verluste von Nachrichten und Quellen zu vermeiden. Vor einem
+Update lokale Daten sichern. Ein Downgrade entfernt die neuen Phase-3-Verläufe.
+
+Der opt-in Test verwendet ausschließlich eine temporäre synthetische Welt. Er prüft
+zwei echte Modellbeiträge, übertragene persönliche Erinnerung, Abruf im neuen Gespräch,
+Geheimnisisolation, Weltzeit und die gemeldeten Reasoning-Tokens:
+
+```powershell
+Set-Location C:\OpenWorld\backend
+& ..\.venv\Scripts\python.exe -m tests.verify_simulation_live --model openworld-local-test --output "$env:TEMP\openworld-live-result.json"
+```
+
+Vorher das gewünschte lokale Modell unter diesem Bezeichner in LM Studio laden,
+16k Kontext einstellen und den lokalen Server starten (Standardport 1234).
+Der Test verändert keine reguläre Datenbank und lädt/entlädt keine Modelle selbst.
+
 ## Noch nicht implementiert / nächste Schritte
 
-1. **Phase 3:** React-Flow-Beziehungsgraph, Gruppenchats, Simulation und Zeitachse,
-   kontrollierte Reisen und weiterer Provideradapter. Portabler JSON-Import/-Export.
-   Die Grundlagen für unabhängige Sprecheridentitäten, mehrere Ereignisbeteiligte,
-   charakterbezogene Kontexte und transaktionale Operationen sind vorhanden.
-   Eine autonome Gesprächs-/Simulationssteuerung und komplexe Inventartransaktionen
-   sind ausdrücklich noch nicht implementiert.
-2. **Phase 4:** Konten, serverseitige Autorisierung, revisionsbasierte Synchronisierung,
-   PostgreSQL-Tests, Feldvorlagen, Plugins und separater Google-Drive-Backupadapter.
-
-Geplantes Exportformat: Envelope `{ "format": "openworld", "version": 1, "world": ...,
-"locations": [...], "characters": [...], "relationships": [...], "knowledge": [...],
-"conversations": [...], "messages": [...] }`, stabile IDs, ISO-8601-UTC-Zeitstempel,
-typisierte Attribute und explizite Nachrichtenquellen. Kein Providerblock, keine
-API-Schluessel. Import soll Schema/Referenzen in einer Transaktion validieren und
-bestehende Revisionen nicht ungeprueft ueberschreiben. Das beschreibt den Vertrag
-fuer die naechste Phase, keine schon vorhandene Importfunktion.
+Tagesroutinen, Entfernungs-/Wegfindungssystem, benutzerdefinierte numerische
+Beziehungs-Effektregeln und verzweigte Simulationen bleiben spätere Erweiterungen.
+Keine willkürlichen numerischen Beziehungsänderungen durch das Modell.
+Konten, serverseitige Autorisierung, Mehrbenutzersynchronisierung, PostgreSQL-Zertifizierung,
+Feldvorlagen, Plugins und ein separater Google-Drive-Backupadapter sind ebenfalls offen.
 
 ## Lizenz
 

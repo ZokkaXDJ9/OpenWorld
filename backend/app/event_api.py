@@ -127,7 +127,12 @@ def edit_proposal(
     if sources and (not message or message.revision != sources[0].message_revision):
         raise HTTPException(409, "Quelle wurde inzwischen geändert")
     if sources:
-        body = body.model_copy(update={"evidence_quote": sources[0].quote})
+        body = body.model_copy(
+            update={
+                "evidence_quote": sources[0].quote,
+                "recipient_id": sources[0].recipient_id,
+            }
+        )
     validate_event(db, world_id, body, message)
     mode, reason = decide_mode(db, world_id, body, message)
     with db.begin_nested():
@@ -256,6 +261,8 @@ def retry(world_id: str, job_id: str, db: DB):
     job = db.get(ExtractionJob, job_id)
     if not job or job.world_id != world_id:
         raise HTTPException(404, "Extraktionsauftrag nicht gefunden")
+    if job.simulation_id:
+        raise HTTPException(409, "Simulationsauftrag nur über die Simulation bewusst fortsetzen.")
     if not event_settings(db, world_id).enabled:
         raise HTTPException(409, "Ereigniserkennung ist deaktiviert")
     if job.status != "failed" or job.attempts >= MAX_ATTEMPTS:
@@ -270,23 +277,43 @@ def extract_conversation(conversation_id: str, request: Request, db: DB):
     conversation = db.get(Conversation, conversation_id)
     if not conversation:
         raise HTTPException(404, "Gespräch nicht gefunden")
+    if conversation.kind == "simulation":
+        raise HTTPException(
+            409, "Simulationsquellen werden ausschließlich durch ihre Simulation verarbeitet."
+        )
     if conversation_id in request.app.state.active_conversations:
         raise HTTPException(409, "Antwort zuerst abschließen lassen")
     if not event_settings(db, conversation.world_id).enabled:
         raise HTTPException(409, "Ereigniserkennung zuerst bewusst aktivieren")
     result = {}
-    messages = list(db.scalars(
-        select(Message)
-        .where(
-            Message.conversation_id == conversation_id,
-            Message.status == "complete",
+    messages = list(
+        db.scalars(
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.status == "complete",
+            )
+            .order_by(Message.sequence)
         )
-        .order_by(Message.sequence)
-    ))
+    )
+    if conversation.kind == "group":
+        from .simulation import enqueue_witnesses
+
+        for message in messages:
+            enqueue_witnesses(db, conversation, message)
+        db.commit()
+        return [
+            encode(job)
+            for job in db.scalars(
+                select(ExtractionJob).where(
+                    ExtractionJob.conversation_id == conversation.id,
+                )
+            )
+        ]
     index = 0
     while index < len(messages):
         source = messages[index]
-        pair = messages[index:index + 2]
+        pair = messages[index : index + 2]
         if len(pair) == 2:
             index += 2
         else:

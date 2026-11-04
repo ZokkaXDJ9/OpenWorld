@@ -60,6 +60,8 @@ export type Message = {
   sequence: number
   revision: number
   speaker_character_id: string | null
+  speaker_type?: 'human' | 'character'
+  world_minute?: number | null
 }
 export type ProviderSettings = {
   base_url: string
@@ -81,6 +83,8 @@ export type ExtractionProviderSettings = Omit<ProviderSettings, 'reasoning_profi
 }
 
 export type EventOperation =
+  | { op: 'transfer'; entity_id: string; revision: number; target_id: string; target_revision: number; item: string }
+  | { op: 'clock'; entity_id: string; revision: number; elapsed_minutes: number; minutes_per_day: number; epoch_label: string }
   | { op: 'knowledge'; character_id: string | null; subject_id?: string | null; kind: KnowledgeKind
       content: string; confidence: number; importance?: number; emotion?: string; source?: string
       supersedes?: string[]; contradicts?: string[] }

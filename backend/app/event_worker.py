@@ -38,6 +38,7 @@ async def run_worker(app):
                 .where(
                     ExtractionJob.status == "pending",
                     EventSettings.enabled.is_(True),
+                    ExtractionJob.simulation_id.is_(None),
                 )
                 .order_by(ExtractionJob.created_at, ExtractionJob.id)
                 .limit(1)
