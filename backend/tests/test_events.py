@@ -392,16 +392,25 @@ def test_message_edit_invalidates_effects_and_reextracts_new_revision(eldoria):
     )
     with e["factory"]() as db:
         jobs = list(db.scalars(select(ExtractionJob)))
-        assert len(jobs) == 2
-        assert {job.status for job in jobs} == {"invalidated", "pending"}
+        assert len(jobs) == 1
+        assert jobs[0].status == "invalidated"
+    response = e["client"].post(f"/api/conversations/{e['conversation']['id']}/regenerate")
+    assert "event: done" in response.text
+    with e["factory"]() as db:
+        assert {job.status for job in db.scalars(select(ExtractionJob))} == {
+            "invalidated",
+            "pending",
+        }
 
 
 def test_source_edit_conflict_preserves_messages_and_independent_changes(eldoria):
     e = eldoria
     enable(e)
-    message_id, job_id = queue_source(e)
+    assert act(e, propose(e, [state(e, Haltung="offen")]).json(), "approve").status_code == 200
+    quote = "Deine Haltung ist ruhig."
+    message_id, job_id = queue_source(e, content=quote)
     operation = state(e, Haltung="ruhig")
-    event = extracted_event(e, operations=[operation])
+    event = extracted_event(e, operations=[operation], evidence_quote=quote)
     assert extract(e, job_id, {"events": [event]})["status"] == "complete"
     pending = e["client"].get("/api" + e["path"] + "/events").json()[0]
     assert act(e, pending, "approve").status_code == 200
@@ -415,7 +424,7 @@ def test_source_edit_conflict_preserves_messages_and_independent_changes(eldoria
         e["client"]
         .get(f"/api/conversations/{e['conversation']['id']}/messages")
         .json()[0]["content"]
-        == "Power hat einen Kristall."
+        == quote
     )
 
 

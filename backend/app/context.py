@@ -136,6 +136,7 @@ def build_context(
     budget = context_window - output_tokens - 256
     messages = [system]
     used = tokens(system)
+    latest = None
     if history:
         latest = {"role": history[-1].role, "content": history[-1].content}
         used += tokens(latest)
@@ -243,7 +244,9 @@ def build_context(
                 if used + cost <= budget:
                     messages.append(message)
                     used += cost
+    # Some local chat templates accept exactly one leading system message.
+    messages = [{"role": "system", "content": "\n\n".join(m["content"] for m in messages)}]
     messages.extend(recent)
-    if history:
+    if latest is not None:
         messages.append(latest)
-    return messages, used
+    return messages, sum(tokens(message) for message in messages)

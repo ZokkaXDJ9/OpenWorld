@@ -146,3 +146,68 @@ def test_phase2_migration_preserves_populated_messages_knowledge_and_profiles(tm
             "SELECT speaker_character_id FROM messages WHERE id='answer'"
         ).fetchone() == ("c",)
         assert db.execute("SELECT count(*) FROM events").fetchone() == (0,)
+
+
+def test_extraction_migration_preserves_jobs_provider_and_sources(tmp_path):
+    backend = Path(__file__).parents[1]
+    env = dict(os.environ, OPENWORLD_DATA_DIR=str(tmp_path))
+    env.pop("OPENWORLD_DATABASE_URL", None)
+
+    def migrate(action, target):
+        subprocess.run(
+            [__import__("sys").executable, "-m", "alembic", action, target],
+            cwd=backend,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    migrate("upgrade", "0003")
+    with sqlite3.connect(tmp_path / "openworld.db") as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("INSERT INTO worlds VALUES ('w','Welt','Lore','[]','{}',4)")
+        db.execute(
+            "INSERT INTO characters VALUES ('c','w','Lumia','Profil','{}','{}','[]',"
+            "NULL,NULL,'unknown',7)"
+        )
+        db.execute("INSERT INTO conversations VALUES ('chat','w','c','Alt','2020-01-01')")
+        db.execute(
+            "INSERT INTO messages VALUES "
+            "('msg','chat','user','Power hat einen Kristall.','complete','2020-01-01',1,3,NULL)"
+        )
+        db.execute(
+            "INSERT INTO provider_settings VALUES "
+            "(1,'http://localhost:1234/v1','local','encrypted-test-data',32768,2048,0.7)"
+        )
+        db.execute(
+            "INSERT INTO extraction_jobs VALUES "
+            "('j','w','chat','msg',3,'legacy-dedup','complete',1,'','[]','2020-01-01')"
+        )
+        columns = {
+            table: [row[1] for row in db.execute(f"PRAGMA table_info({table})")]
+            for table in (
+                "worlds",
+                "characters",
+                "messages",
+                "provider_settings",
+                "extraction_jobs",
+            )
+        }
+        before = {
+            table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() for table in columns
+        }
+    migrate("upgrade", "head")
+    with sqlite3.connect(tmp_path / "openworld.db") as db:
+        for table, names in columns.items():
+            assert (
+                db.execute(f"SELECT {','.join(names)} FROM {table} ORDER BY id").fetchall()
+                == before[table]
+            )
+        assert db.execute("SELECT * FROM extraction_job_sources").fetchall() == [("j", "msg", 3)]
+        assert db.execute("SELECT diagnostics FROM extraction_jobs").fetchone() == ("[]",)
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    migrate("downgrade", "0003")
+    with sqlite3.connect(tmp_path / "openworld.db") as db:
+        for table in columns:
+            assert db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() == before[table]

@@ -1,17 +1,25 @@
 """Validated proposals and reversible world mutations; callers own the transaction."""
 
 from copy import deepcopy
+from typing import NoReturn
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from .event_bindings import (
+    reject_relationship_state_aliases,
+    relationship_binding,
+    state_binding,
+)
 from .event_schemas import (
     ArchiveOperation,
     EventInput,
     KnowledgeOperation,
     LocationOperation,
     RelationshipOperation,
+    RelationshipValue,
     StateOperation,
 )
 from .models import (
@@ -26,6 +34,7 @@ from .models import (
     EventSource,
     EventTarget,
     ExtractionJob,
+    ExtractionJobSource,
     Knowledge,
     KnowledgeLink,
     Location,
@@ -34,6 +43,7 @@ from .models import (
     World,
     now,
 )
+from .schemas import Attribute
 from .serialization import encode
 
 ENTITY_MODELS = {
@@ -45,7 +55,7 @@ ENTITY_MODELS = {
 }
 
 
-def fail(detail: str, status: int = 422):
+def fail(detail: str, status: int = 422) -> NoReturn:
     raise HTTPException(status, detail)
 
 
@@ -97,6 +107,9 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
     if body.location_id:
         entity(db, "location", body.location_id, world_id)
     conversation = db.get(Conversation, message.conversation_id) if message else None
+    own_speech = bool(
+        message and conversation and message.speaker_character_id == conversation.character_id
+    )
     if message:
         if not conversation or conversation.world_id != world_id or message.status != "complete":
             fail("Nur gespeicherte vollständige Nachrichten dürfen Ereignisse auslösen")
@@ -159,18 +172,52 @@ def validate_event(db: Session, world_id: str, body: EventInput, message: Messag
                     fail("Kein Zugriff auf den privaten Zustand anderer Charaktere")
                 if kind == "relationship" and target.source_id != conversation.character_id:
                     fail("Keine Änderung fremder Beziehungseinschätzungen")
+                if isinstance(operation, StateOperation):
+                    if kind == "character":
+                        reject_relationship_state_aliases(db, target, body.evidence_quote)
+                    state_binding(
+                        target,
+                        operation.values,
+                        body.evidence_quote,
+                        own_speech,
+                        operation.value_quotes,
+                    )
             if isinstance(operation, RelationshipOperation):
+                if operation.target_id is not None and operation.target_id != target.target_id:
+                    fail("Zielcharakter passt nicht zur gerichteten Beziehung")
                 existing = {attribute["name"]: attribute for attribute in target.attributes}
+                if len({name.casefold() for name in existing}) != len(target.attributes):
+                    fail("Mehrdeutige Attributdefinitionen in der bestehenden Beziehung")
+                resolved: list[Attribute] = []
                 for attribute in operation.attributes:
                     old = existing.get(attribute.name)
                     if not old:
                         fail("Beziehungsänderungen benötigen ein bestehendes Attribut")
+                    if isinstance(attribute, RelationshipValue):
+                        try:
+                            attribute = Attribute.model_validate({**old, "value": attribute.value})
+                        except ValidationError as exc:
+                            reason = exc.errors(include_input=False, include_url=False)[0]["msg"]
+                            fail(f"Wert passt nicht zur bestehenden Attributdefinition: {reason}")
                     unchanged = attribute.model_dump(exclude={"value"})
                     old_definition = {key: value for key, value in old.items() if key != "value"}
                     if unchanged != old_definition:
                         fail("Eine Ereignisänderung darf keine Attributdefinition umschreiben")
                     if attribute.type == "reference":
                         fail("Referenzattribute sind keine unterstützte Beziehungsoperation")
+                    resolved.append(attribute)
+                operation.attributes[:] = resolved
+                if conversation:
+                    relationship_binding(
+                        db,
+                        target,
+                        entity(db, "character", conversation.character_id, world_id),
+                        operation.target_id,
+                        resolved,
+                        operation.attribute_quotes,
+                        body.evidence_quote,
+                        own_speech,
+                    )
             if isinstance(operation, LocationOperation):
                 for location_id in (operation.location_id, operation.destination_id):
                     if location_id:
@@ -652,11 +699,26 @@ def undo_event(db: Session, event: Event, revision: int, actor="user"):
 def invalidate_messages(db: Session, message_ids: list[str]):
     if not message_ids:
         return
+    jobs = list(
+        db.scalars(
+            select(ExtractionJob).where(
+                (ExtractionJob.message_id.in_(message_ids))
+                | (
+                    ExtractionJob.id.in_(
+                        select(ExtractionJobSource.job_id).where(
+                            ExtractionJobSource.message_id.in_(message_ids)
+                        )
+                    )
+                )
+            )
+        )
+    )
+    linked_event_ids = [event_id for job in jobs for event_id in job.event_ids]
     events = list(
         db.scalars(
             select(Event)
-            .join(EventSource)
-            .where(EventSource.message_id.in_(message_ids))
+            .outerjoin(EventSource)
+            .where(EventSource.message_id.in_(message_ids) | Event.id.in_(linked_event_ids))
             .distinct()
             .order_by(Event.created_at.desc(), Event.id.desc())
         )
@@ -667,7 +729,7 @@ def invalidate_messages(db: Session, message_ids: list[str]):
         if event.status != "invalidated":
             compare_and_set(db, event, {"status": "invalidated"}, event.revision)
             audit(db, event, "invalidated", "source_edit")
-    for job in db.scalars(select(ExtractionJob).where(ExtractionJob.message_id.in_(message_ids))):
+    for job in jobs:
         job.status = "invalidated"
     # Preserve the event history, while Phase-1 cascade semantics remain unchanged.
     for knowledge in db.scalars(

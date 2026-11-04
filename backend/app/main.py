@@ -22,10 +22,12 @@ from .db import get_db
 from .event_api import router as event_router
 from .event_worker import worker
 from .events import block_active_target_delete, invalidate_messages, record_editor_change
-from .extraction import enqueue
+from .extraction import enqueue_turn
+from .extraction_settings import extraction_provider_settings
 from .models import (
     Character,
     Conversation,
+    ExtractionProviderSettings,
     Knowledge,
     Location,
     Message,
@@ -38,6 +40,7 @@ from .schemas import (
     CharacterInput,
     ConversationInput,
     EditMessageInput,
+    ExtractionProviderInput,
     KnowledgeInput,
     LocationInput,
     LocationTreeInput,
@@ -63,7 +66,7 @@ async def lifespan(app: FastAPI):
                 await task
 
 
-app = FastAPI(title="OpenWorld", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="OpenWorld", version="0.2.1", lifespan=lifespan)
 app.include_router(event_router)
 app.add_middleware(
     CORSMiddleware,
@@ -484,7 +487,7 @@ def settings(db: Session) -> ProviderSettings:
     return row
 
 
-def public_settings(row: ProviderSettings) -> dict:
+def public_settings(row: ProviderSettings | ExtractionProviderSettings) -> dict:
     data = encode(row)
     data["has_api_key"] = bool(data.pop("encrypted_key"))
     return data
@@ -498,6 +501,26 @@ def get_settings(db: DB):
 @app.put("/api/settings/provider")
 def put_settings(body: ProviderInput, db: DB):
     row = settings(db)
+    for key, value in body.model_dump(exclude={"api_key", "clear_key"}).items():
+        setattr(row, key, value)
+    if body.api_key:
+        row.encrypted_key = encrypt_key(body.api_key)
+    elif body.clear_key:
+        row.encrypted_key = ""
+    db.commit()
+    return public_settings(row)
+
+
+@app.get("/api/settings/extraction")
+def get_extraction_settings(db: DB):
+    row = extraction_provider_settings(db)
+    db.commit()
+    return public_settings(row)
+
+
+@app.put("/api/settings/extraction")
+def put_extraction_settings(body: ExtractionProviderInput, db: DB):
+    row = extraction_provider_settings(db)
     for key, value in body.model_dump(exclude={"api_key", "clear_key"}).items():
         setattr(row, key, value)
     if body.api_key:
@@ -584,7 +607,6 @@ async def edit_message(
     message.content = body.content
     message.revision += 1
     db.flush()
-    enqueue(db, conversation, message)
     db.commit()
     return encode(message)
 
@@ -646,7 +668,7 @@ def response_stream(
             )
             db.add(assistant)
             db.flush()
-            enqueue(db, conversation, assistant)
+            enqueue_turn(db, conversation, assistant)
             db.commit()
             yield sse("done", {"message": encode(assistant)})
         except HTTPException as exc:
@@ -697,7 +719,7 @@ async def send_message(conversation_id: str, body: SendInput, request: Request, 
     )
     db.add(message)
     db.flush()
-    enqueue(db, conversation, message)
+
     response = response_stream(conversation, request, db)
     db.commit()
     request.app.state.active_conversations.add(conversation.id)

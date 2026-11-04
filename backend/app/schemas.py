@@ -169,7 +169,7 @@ class EditMessageInput(SendInput):
     confirm_discard: bool = False
 
 
-class ProviderInput(StrictModel):
+class ConnectionInput(StrictModel):
     base_url: str = Field(max_length=2000)
     model: str = Field(min_length=1, max_length=200)
     api_key: str | None = Field(default=None, max_length=10000)
@@ -194,4 +194,53 @@ class ProviderInput(StrictModel):
             raise ValueError("Kontextfenster muss Platz für Eingabe und Ausgabe bieten")
         if self.clear_key and self.api_key:
             raise ValueError("Schlüssel nicht gleichzeitig setzen und löschen")
+        return self
+
+
+class ProviderInput(ConnectionInput):
+    reasoning_profile: Literal["default", "openai", "llama_cpp", "lmstudio"] = "default"
+    reasoning_mode: Literal["default", "off", "on", "low", "medium", "high"] = "default"
+
+    @model_validator(mode="after")
+    def reasoning_options(self) -> Self:
+        allowed = {
+            "default": {"default"},
+            "lmstudio": {"default", "off"},
+            "llama_cpp": {"default", "off", "on"},
+            "openai": {"default", "off", "low", "medium", "high"},
+        }
+        if self.reasoning_mode not in allowed[self.reasoning_profile]:
+            raise ValueError("Reasoning-Modus passt nicht zum gewählten Chat-Anbieterprofil")
+        return self
+
+
+class ExtractionProviderInput(ConnectionInput):
+    use_chat_connection: bool = True
+    base_url: str = Field(default="http://localhost:1234/v1", max_length=2000)
+    model: str = Field(default="", max_length=200)
+    context_window: int = Field(default=16384, ge=1024)
+    max_output_tokens: int = Field(default=4096, ge=1, le=65536)
+    temperature: float = Field(default=0, ge=0, le=2)
+    timeout_seconds: int = Field(default=300, ge=15, le=1800)
+    provider_profile: Literal["compatible", "openai", "llama_cpp", "ollama", "lmstudio"] = (
+        "compatible"
+    )
+    reasoning_mode: Literal["default", "off", "on", "low", "medium", "high"] = "default"
+    structured_output: Literal["auto", "json_schema", "json_object", "text"] = "auto"
+    auto_retry: bool = True
+
+    @model_validator(mode="after")
+    def profile_options(self) -> Self:
+        if self.provider_profile == "compatible" and self.reasoning_mode != "default":
+            raise ValueError("Für Reasoning-Steuerung ein passendes Anbieterprofil wählen")
+        if self.provider_profile == "openai" and self.reasoning_mode == "on":
+            raise ValueError("OpenAI benötigt off, low, medium oder high")
+        if self.provider_profile == "llama_cpp" and self.reasoning_mode not in {
+            "default",
+            "off",
+            "on",
+        }:
+            raise ValueError("llama.cpp unterstützt hier nur default, off oder on")
+        if self.provider_profile == "lmstudio" and self.structured_output not in {"auto", "text"}:
+            raise ValueError("LM Studio mit Reasoning-Steuerung nutzt natives JSON per Prompt")
         return self

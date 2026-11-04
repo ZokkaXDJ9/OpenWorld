@@ -145,12 +145,15 @@ def test_chat_edit_removes_descendants_and_updates_provenance(eldoria):
     assert len(e["client"].get(path).json()) == 1
     rows = e["client"].get("/api" + e["path"] + "/knowledge").json()
     personal = [r for r in rows if r["character_id"] == e["lumia"]["id"]]
-    assert len(personal) == 1
-    assert personal[0]["content"] == "Power hat einen Apfel."
+    assert personal == []
     assert any(r["id"] == e["fact"]["id"] for r in rows)
     regenerated = e["client"].post(f"/api/conversations/{e['conversation']['id']}/regenerate")
     assert "event: done" in regenerated.text
     assert len(e["client"].get(path).json()) == 2
+    drain_jobs(e["factory"], e["provider"])
+    rows = e["client"].get("/api" + e["path"] + "/knowledge").json()
+    personal = [r for r in rows if r["character_id"] == e["lumia"]["id"]]
+    assert len(personal) == 1 and personal[0]["content"] == "Power hat einen Apfel."
 
 
 def test_regeneration_replaces_only_latest_answer(eldoria):
@@ -223,7 +226,8 @@ def test_large_context_and_exact_budget(eldoria):
         assert larger_count >= count
         smaller, small_count = build_context(db, conversation, 2048, 512)
         assert small_count <= 2048 - 512 - 256
-        assert len(smaller) < len(messages)
+        assert small_count < count
+        assert [message["role"] for message in smaller] == ["system"]
         db.add(
             Message(
                 conversation_id=conversation.id, role="user", content="Wort " * 2000, sequence=1

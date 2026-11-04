@@ -41,6 +41,7 @@ class StateOperation(StrictModel):
     entity_id: str
     revision: int = Field(ge=1)
     values: dict[str, StateValue] = Field(min_length=1, max_length=30)
+    value_quotes: dict[str, str] = Field(default_factory=dict, max_length=30)
 
     @field_validator("values")
     @classmethod
@@ -50,15 +51,32 @@ class StateOperation(StrictModel):
         return value
 
 
+class RelationshipValue(StrictModel):
+    name: str = Field(min_length=1, max_length=100)
+    value: StateValue
+
+
 class RelationshipOperation(StrictModel):
     op: Literal["relationship"] = "relationship"
     entity_id: str
     revision: int = Field(ge=1)
-    attributes: list[Attribute] = Field(min_length=1, max_length=100)
+    target_id: str | None = Field(default=None, max_length=36)
+    attribute_quotes: dict[str, str] = Field(
+        default_factory=dict,
+        max_length=100,
+        description=(
+            "Bei einem Attribut weglassen oder {}: evidence_quote wird verwendet. "
+            "Nur bei mehreren Attributen: Schlüssel exakt attributes[].name; Wert jeweils "
+            "ein unveränderter wörtlicher Ausschnitt aus evidence_quote, keine Paraphrase."
+        ),
+    )
+    attributes: list[Attribute | RelationshipValue] = Field(min_length=1, max_length=100)
 
     @field_validator("attributes")
     @classmethod
-    def unique(cls, value: list[Attribute]) -> list[Attribute]:
+    def unique(
+        cls, value: list[Attribute | RelationshipValue]
+    ) -> list[Attribute | RelationshipValue]:
         if len({a.name.casefold() for a in value}) != len(value):
             raise ValueError("Doppelte Beziehungsattribute")
         if any(isinstance(a.value, float) and not isfinite(a.value) for a in value):
@@ -100,6 +118,7 @@ Operation = Annotated[
 
 
 class EventInput(StrictModel):
+    source_message_id: str | None = Field(default=None, max_length=36)
     event_type: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
     description: str = Field(min_length=1, max_length=10000)
     occurred_at: datetime | None = None

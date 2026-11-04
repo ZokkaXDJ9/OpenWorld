@@ -82,9 +82,11 @@ OpenWorld\
       context.py        Wissensfilterung, Retrieval und Tokenbudget
       provider.py       Providerprotokoll, Streamingadapter, Schluesselverwaltung
       events.py         Validierung, Freigaben, atomare Mutationen und Undo
+      event_bindings.py Bestehende Ziele, Attributbindung und ausdrückliche Wertebelege
       event_schemas.py  Strikte strukturierte Vorschläge und Operationen
       event_api.py      Ereignisse, Freigaberegeln, Aufträge und Erinnerungen
       extraction.py     Quellengebundene Extraktion und persistente Aufträge
+      extraction_settings.py Separate Verbindung, Budgets und Anbieterprofile
       event_worker.py   Lokaler, sequenzieller Hintergrunddienst
       memory.py         Hybrides lokales Retrieval und Originalsatzauszüge
       serialization.py Gemeinsame Serialisierung mit UTC-Zeitstempeln
@@ -235,8 +237,77 @@ fuer Datenbankzugriffe. Das LLM besitzt keine Schreibwerkzeuge oder Codeausfuehr
 Eine Nachricht wird **nicht mehr pauschal als dauerhafte Erinnerung gespeichert**.
 Die Ereigniserkennung ist standardmäßig ausgeschaltet. Auf der Seite **Ereignisse**
 unter **Ereigniserkennung und Freigaben** kann sie bewusst pro Welt eingeschaltet
-werden. Sie verwendet denselben konfigurierten Anbieter für zusätzliche Aufrufe;
-bei Cloud-Anbietern können dadurch zusätzliche Kosten entstehen.
+werden. Sie verwendet separat konfigurierbare Extraktionseinstellungen für zusätzliche
+Aufrufe; bei Cloud-Anbietern können dadurch zusätzliche Kosten entstehen.
+
+### Extraktionsmodell und Kompatibilität
+
+Unter **Einstellungen → Ereignisextraktion** lassen sich Verbindung, Modell,
+Kontextfenster, Ausgabebudget, Temperature und Zeitlimit unabhängig vom Chat festlegen.
+Standardmäßig werden Verbindung und Zugangsschlüssel des Chats verwendet; ein leerer
+Extraktionsmodellname übernimmt den Chatmodellnamen. Eigene Schlüssel werden separat
+verschlüsselt gespeichert und niemals zurückgegeben. Das tatsächliche Modellfenster
+muss für beide Aufgaben korrekt eingetragen sein.
+
+Standard: **4.096 Ausgabetokens**, **16.384 Kontexttokens**, **300 Sekunden** Zeitlimit.
+Ausgabetokens sind nicht das Kontextfenster: Bei Reasoning-Modellen zählen interne
+Denktokens oft zum Ausgabelimit und können den Platz für JSON aufbrauchen.
+Auch der Chat besitzt unter seinen erweiterten Einstellungen ein unabhängiges
+Reasoning-Profil. Standard ist unverändert die Anbietervorgabe. Beim getesteten
+LM-Studio-Server funktioniert im Chat `reasoning_effort: "none"`; für die native
+Extraktion wird dagegen `reasoning: "off"` verwendet.
+
+Das explizit gewählte Anbieterprofil steuert die tatsächlich verwendete API:
+
+| Profil | Extraktions-API und Reasoning-Steuerung |
+|---|---|
+| OpenAI-kompatibel | `/chat/completions`, keine unbelegte Reasoning-Steuerung |
+| OpenAI | `/chat/completions`, `max_completion_tokens`, `reasoning_effort` |
+| llama.cpp / vLLM | `/chat/completions`, `chat_template_kwargs.enable_thinking` |
+| Ollama | Native `/api/chat`, `think`, `options.num_predict` und optional JSON-Schema |
+| LM Studio | Native `/api/v1/chat`, `reasoning`, `max_output_tokens`, `store: false`, keine Werkzeuge |
+
+Profil und Reasoning-Modus müssen zum Server und zum konkreten Modell passen.
+Nicht jede API akzeptiert jedes Reasoning-Level. LM Studio bietet bei Qwen 3.5 9B
+laut Modellmetadaten `off` und `on`; ein generisches `enable_thinking` am
+OpenAI-Endpunkt wurde im Praxistest ignoriert. Das native Profil verwendet
+JSON-Anweisungen im Prompt statt einer nicht dokumentierten nativen Schemaoption.
+Jede Antwort wird weiterhin streng mit Pydantic sowie allen Quellen-/Referenzregeln
+geprüft. Es gibt keine heuristische JSON-Reparatur und keine ungeprüfte Übernahme.
+
+Bei OpenAI-kompatiblen Endpunkten ist `auto`, JSON-Schema, JSON-Objekt oder reines
+JSON per Prompt wählbar. Nur `auto` darf nach einer ausdrücklichen HTTP-400/422-
+Ablehnung von `response_format` einmal ohne diesen Parameter verhandeln; Authentifizierungs-
+und Netzwerkfehler lösen keine automatische Generierungswiederholung aus.
+
+Nach jedem vollständig gespeicherten Gesprächswechsel werden **beide Nachrichten
+gemeinsam in einem Auftrag** analysiert. Die Quellen besitzen unabhängige Rollen,
+Sprecheridentitäten und Revisionen; die Gruppierung setzt keine Nutzernachricht
+voraus und ist damit auch für spätere KI-zu-KI-Wechsel verwendbar. Noch keine
+autonome Gesprächssteuerung. Reine, vollständig erkannte Gruß-/Dankesphrasen werden
+konservativ ohne Modellaufruf als `skipped` protokolliert. Sobald zusätzlicher Inhalt
+vorliegt, wird nicht anhand einzelner Stichwörter aussortiert.
+
+Die Quellenrevisionen verhindern doppelte Verarbeitung, auch bei erneutem manuellem
+Prüfen. Nachrichtenbearbeitung oder erfolgreiche Regenerierung invalidiert den
+gesamten verknüpften Auftrag samt Ereignissen, nicht nur die zitierte Hälfte des
+Gesprächswechsels. Eine bearbeitete Nutzernachricht wird automatisch erst nach der
+neuen vollständigen Antwort analysiert; explizite manuelle Prüfung bleibt möglich.
+
+**Begrenzte Wiederholungen:** Optional höchstens eine automatische Wiederholung je
+Auftrag bei leerer, abgeschnittener oder ungültiger Ausgabe. Sie erhält einen
+Korrekturhinweis; bei leerer/abgeschnittener Ausgabe wird das Budget soweit möglich
+verdoppelt (z. B. 4.096 → 8.192), bei passendem Anbieterprofil gegebenenfalls Reasoning
+abgeschaltet. Das Kontextbudget wird erneut geprüft. Nach erneutem Fehlschlag nur
+noch manuell, insgesamt höchstens drei Versuche je Auftrag. Die automatische
+Wiederholung ist separat abschaltbar. Alle Ereignisse einer Antwort werden atomar
+validiert/übernommen; Chatnachrichten bleiben bei Fehlschlägen gespeichert.
+
+Unter **Ereignisse → Diagnose** stehen Versuch, Modell/Profil, wirksames Budget,
+Abbruchgrund und gemeldete Token-/Reasoning-Nutzung sowie HTTP-Anzahl einschließlich
+Format-Aushandlung. Nicht gemeldete Werte werden nicht als null Tokens ausgegeben.
+Ein angeforderter Reasoning-Stopp mit weiterhin gemeldeten Denktokens wird als
+Warnung angezeigt. Es werden weder interne Denktexte noch Zugangsschlüssel protokolliert.
 
 Die Extraktion liefert ausschließlich strukturierte Vorschläge. Jeder Vorschlag
 aus einem Chat benötigt ein wörtliches Quellenzitat und existierende Referenzen
@@ -262,6 +333,49 @@ Neue Ereignistypen sind freie, stabile Bezeichner wie `knowledge_acquired` oder
 Archivierung, vorhandene Beziehungsattribute, Charakterzustände und Aufenthaltsorte.
 Willkürliche neue Beziehungsattribute oder geänderte Attributdefinitionen werden
 nicht als Ereignisänderung akzeptiert.
+
+### Eindeutige Ziele und belegte Werte
+
+Chat-Extraktionen dürfen **keine neuen Zustandsfelder** anlegen. Neue Felder zuerst
+bewusst im manuellen Editor erstellen. Vorhandene Felder behalten ihren Datentyp;
+ein Ersatz wie `trust_power`, `powerTrust` oder `Vertrauen zu Power` wird nicht
+anstelle eines Beziehungsattributs angelegt. Auch bereits vorhandene Schattenfelder
+dürfen eine ausdrücklich benannte Beziehungsänderung nicht aufnehmen.
+
+Für Beziehungen referenziert die KI die vorhandene **Beziehungs-ID**, deren
+Revision, `target_id` und den exakten vorhandenen Attributnamen. Die kompakte
+Wertreferenz `attributes: [{"name": "Vertrauen", "value": 60}]` wird vom Backend
+gegen die bestehende Definition aufgelöst: Typ, Auswahlmöglichkeiten und Grenzen
+kommen aus der Datenbank, nicht aus Modellannahmen. Das bisherige vollständige
+Attributformat bleibt unterstützt, darf die Definition aber nicht verändern.
+Nur ausgehende Beziehungen des Gesprächsempfängers sind zulässig.
+
+Zusätzlich muss das Quellenzitat Besitzer, Attribut und Ziel eindeutig verbinden,
+etwa **„Dein Vertrauen zu Power steigt von 45 auf 60.“** oder
+**„Lumias Vertrauen zu Power: 60.“** Bei gleichen Charakternamen oder mehreren
+passenden Beziehungen reicht der Name nicht: Das Zitat muss die konkrete
+Beziehungs-ID enthalten, beispielsweise `BEZIEHUNGS-ID Vertrauen: 60`.
+„Mein“ gehört nur bei eigener Figurenrede zum Empfänger, nicht bei fremden Sprechern.
+
+Numerische Änderungen brauchen eine ausdrückliche einzelne Zuweisung wie `: 60`,
+`auf 60` oder `von 45 auf 60`; ein genannter Ausgangswert muss zum bestehenden Wert
+passen. Dezimalkommas werden unterstützt. Aus Lob, Streit oder „etwas mehr Vertrauen“
+wird **kein Zahlenwert errechnet**. Verneinte, beabsichtigte oder mehrdeutige Angaben
+werden konservativ abgelehnt. Unterstützte Text-, Boolean- und Listenänderungen
+benötigen ebenfalls einen wörtlichen Zuweisungsbeleg, keine bloße Paraphrase.
+Mehrere Werte benötigen eigene unveränderte Teilzitate in `attribute_quotes`
+beziehungsweise `value_quotes`; bei einem einzelnen Wert genügt `evidence_quote`.
+
+Diese Prüfung gilt bei Extraktion, Vorschlagsbearbeitung **und erneut bei Bestätigung**,
+auch für alte offene Vorschläge. Eine manuelle Bestätigung umgeht sie nicht.
+Unklare Formulierungen erzeugen einen sichtbaren Validierungsfehler, keine stille
+Umleitung auf ein anderes Feld. Der begrenzte Korrekturversuch darf einen neuen,
+vollständig geprüften Vorschlag liefern. Sonst bleibt der Chat erhalten und die
+Welt unverändert. Bewusste freie Änderungen bleiben im manuellen Editor möglich;
+Quellenbindung bedeutet insbesondere, dass ein extrahierter Zahlenvorschlag nicht
+nachträglich auf einen im Zitat unbelegten Wert umgeschrieben werden kann.
+Freigaberegeln, Schutz objektiver Fakten, Audit und Undo bleiben erhalten.
+Das ist eine konservative Bindungsprüfung, keine allgemeine Sprachverständnisgarantie.
 
 Beschreibung und `state` werden getrennt gespeichert. Manuelle Zustandsaenderungen
 überschreiben nicht die Beschreibung. Änderungen im Editor an Zuständen,
@@ -309,6 +423,10 @@ Charaktere behalten voneinander unabhängige Sichtweisen auf dasselbe Ereignis.
 
 Modellfenster und Ausgabereserve sind konfigurierbar, auch 128k oder 256k.
 Pflichtkontext (Profil, Welt, aktueller Ort und letzte Nachricht) hat Vorrang.
+Systemregeln, öffentliche Daten und sichtbare Erinnerungen werden in einer einzigen
+führenden Systemnachricht zusammengeführt. Damit funktionieren auch lokale
+Chattemplates, die weitere Systemnachrichten ablehnen; Rollen und Reihenfolge
+des eigentlichen Gesprächs bleiben erhalten.
 Dann folgen aktuelle Gesprächsnachrichten und persönliches Wissen, gewichtet
 nach Wortüberschneidung, verknüpften Charakteren, deutschen Themenmustern
 (u. a. Beziehungen, Versprechen, Begegnungen, Verlust), Wichtigkeit und zeitlicher
@@ -340,6 +458,7 @@ Die API verwendet das Praefix `/api`:
 | Nachrichten | `GET/POST /conversations/{id}/messages`, `PUT /conversations/{id}/messages/{message}` |
 | Regenerierung | `POST /conversations/{id}/regenerate` |
 | Provider | `GET/PUT /settings/provider` |
+| Extraktionsmodell | `GET/PUT /settings/extraction` |
 | Ereignisse | `GET/POST /worlds/{id}/events`, `GET/PUT /worlds/{id}/events/{event}` |
 | Ereignisaktionen | `POST /worlds/{id}/events/{event}/approve`, `/reject`, `/undo` |
 | Erkennung/Freigaben | `GET/PUT /worlds/{id}/event-settings`, `GET/PUT /worlds/{id}/event-rules` |
@@ -505,13 +624,35 @@ sämtliche ursprünglichen Spalten befüllter Welten, Profile, Chats und Wissens
 Browserprüfungen decken zusätzlich Bearbeitung/Bestätigung/Rücknahme von Vorschlägen
 und den persönlichen Erinnerungsverlauf ab.
 
-Verifiziert am 4. November 2026: **91 Backendtests und 14 Browsertests bestanden**.
+Verifiziert am 4. November 2026: **161 Backendtests und 15 Browsertests bestanden**.
 Ruff, TypeScript-Prüfung und Vite-Produktionsbuild sind erfolgreich.
 
 Der Testdienst prüft die Providerintegration
 und die tatsaechlich uebertragenen Kontextdaten, nicht die Antwortqualitaet eines
-echten LLM. **Die semantische Qualität der Ereignisextraktion wurde in dieser
-Umgebung noch nicht mit einem echten Modell praktisch validiert.**
+echten LLM. Zusätzlich wurde der grundlegende Erinnerungskreislauf mit dem tatsächlich
+installierten **Qwen 3.5 9B in LM Studio** und isolierten künstlichen Daten geprüft:
+Mitteilung → quellengebundenes persönliches Wissen mit 50 % Vertrauen →
+Erinnerung in einem neuen Gespräch. Quellenbearbeitung nahm die alte Information
+zurück; nach erneuter Antwort/Extraktion erinnerte ein weiteres Gespräch den
+korrigierten Fund. Private Weltfakten und fremde Geheimnisse blieben ausgeschlossen.
+Mit dem nativen Extraktionsprofil und Reasoning `off` meldete der Anbieter
+**0 Reasoning-Tokens**. Chat-Reasoning wurde unabhängig per LM-Studio-Profil ausgeschaltet.
+
+Der Praxistest zeigte außerdem zwei Kompatibilitätsprobleme, die behoben wurden:
+ein erschöpftes Ausgabebudget durch Reasoning und ein Chattemplate, das mehrere
+Systemnachrichten ablehnt. Der vollständige Erinnerungskreislauf funktioniert
+mit der getesteten Konfiguration; daraus folgt **keine allgemeine semantische
+Zertifizierung**. Im erneuten Test schlug Qwen zunächst ein neues Zustandsfeld
+`Vertrauen zu Power` vor. Das Backend lehnte es ohne Teiländerungen ab. Nach genau
+einer automatischen Korrekturanfrage lieferte dasselbe Modell die bestehende
+gerichtete Beziehungs-ID, Ziel-ID und das Attribut `Vertrauen` mit Wert 60.
+Dieser echte Beziehungsvorschlag blieb bestätigungspflichtig; Bestätigung änderte
+45 auf 60, Undo stellte 45 wieder her. Kein Schattenfeld wurde angelegt.
+Alle **14 Prüfungen des isolierten Modelllaufs** bestanden, einschließlich
+Erinnerungskorrektur, privater Kontexttrennung und 0 gemeldeten Reasoning-Tokens.
+Der Test belegt die sichere Ablehnung/Korrektur dieses Fehlers, nicht fehlerfreie
+Erstversuche oder allgemeine semantische Zuverlässigkeit. Weitere Formulierungen
+können bewusst abgelehnt werden; Vorschläge weiterhin inhaltlich prüfen.
 Starlette meldet im TestClient eine Abkuendigungswarnung fuer dessen httpx-Integration;
 die Tests funktionieren mit den fixierten Versionen.
 Zusaetzlich bestehen sechs Regressionstests fuer leere, HTML-, Text- und
@@ -524,8 +665,10 @@ sichtbaren Backend-Starthinweis. Dieselbe Fehlerbehandlung gilt fuer API und Cha
    und persönliches Geheimnis nur Power zuweisen.
 2. Unter Einstellungen einen vertrauenswürdigen lokalen OpenAI-kompatiblen Anbieter
    (z. B. Ollama oder LM Studio) und dessen tatsächlich geladenes Modell konfigurieren.
-3. Unter Ereignisse die Erkennung bewusst einschalten. Ein ausreichendes
-   Kontextfenster und Ausgabelimit für strukturiertes JSON konfigurieren.
+3. Unter Einstellungen die **Ereignisextraktion** separat konfigurieren, bei LM Studio
+   das native Profil und für Qwen 3.5 9B Reasoning **Aus** wählen. Ausreichendes
+   Kontextfenster und 4.096–8.192 Ausgabetokens vorsehen. Unter Ereignisse die
+   Erkennung bewusst einschalten.
 4. Zunächst „Wie geht es dir?“ senden: kein dauerhafter Wissenseintrag erwartet.
    Danach „Power hat einen Kristall gefunden.“ senden.
 5. Unter Ereignisse bzw. Erinnerungen prüfen: ausschließlich Lumia erhält eine
@@ -540,6 +683,14 @@ sichtbaren Backend-Starthinweis. Dieselbe Fehlerbehandlung gilt fuer API und Cha
 Für qualitative Prüfung verschiedene Modellantworten und Formulierungen testen.
 Ein Modell kann Ereignisse übersehen oder unbegründete Vorschläge erzeugen;
 Quellenprüfung und Freigaben ersetzen keine Garantie semantischer Richtigkeit.
+
+### Migration 0004
+
+Ergänzt separate Extraktionseinstellungen, strukturierte Auftragsdiagnosen und
+relationale Quellenrevisionen pro Auftrag. Bestehende Aufträge erhalten ihre alte
+Einzelquelle als Verknüpfung; bereits verarbeitete Quellen werden nicht automatisch
+neu analysiert. Bestehende Chat-Providerdaten, Welten, Nachrichten und Erinnerungen
+werden nicht umgeschrieben. Vor dem Start `alembic upgrade head` ausführen.
 
 ### Migration 0003
 

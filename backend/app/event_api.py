@@ -274,20 +274,29 @@ def extract_conversation(conversation_id: str, request: Request, db: DB):
         raise HTTPException(409, "Antwort zuerst abschließen lassen")
     if not event_settings(db, conversation.world_id).enabled:
         raise HTTPException(409, "Ereigniserkennung zuerst bewusst aktivieren")
-    result = []
-    for message in db.scalars(
+    result = {}
+    messages = list(db.scalars(
         select(Message)
         .where(
             Message.conversation_id == conversation_id,
             Message.status == "complete",
         )
         .order_by(Message.sequence)
-    ):
-        job = enqueue(db, conversation, message)
+    ))
+    index = 0
+    while index < len(messages):
+        source = messages[index]
+        pair = messages[index:index + 2]
+        if len(pair) == 2:
+            index += 2
+        else:
+            pair = [source]
+            index += 1
+        job = enqueue(db, conversation, pair[-1], pair)
         if job:
-            result.append(encode(job))
+            result[job.id] = encode(job)
     db.commit()
-    return result
+    return list(result.values())
 
 
 @router.get("/worlds/{world_id}/characters/{character_id}/memories")

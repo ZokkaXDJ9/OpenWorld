@@ -9,6 +9,7 @@ export const statusLabels: Record<string, string> = {
   undone: 'Zurückgenommen', invalidated: 'Quelle geändert', recorded: 'Protokolliert',
   active: 'Aktuell', superseded: 'Überholt', revoked: 'Zurückgenommen', archived: 'Entfernt',
   pending: 'Wartet', running: 'Wird verarbeitet', failed: 'Fehlgeschlagen', complete: 'Abgeschlossen',
+  skipped: 'Smalltalk übersprungen',
 }
 const modeLabels = { auto: 'Automatisch', confirm: 'Bestätigung', protected: 'Geschützt' }
 const classes = { '*': 'Alle Objektklassen', knowledge: 'Wissen', character: 'Charakter',
@@ -65,7 +66,9 @@ export function EventOptions({ worldId, report }: { worldId: string; report: (er
         }
         finally { setBusy(false) }
       }} /> Ereignisse nach Gesprächen erkennen</label>
-    <p className="muted text-sm mb-4">Verwendet den konfigurierten Anbieter für zusätzliche Anfragen.
+    <p className="muted text-sm mb-4">Analysiert beide Nachrichten nach einem abgeschlossenen
+      Gesprächswechsel gemeinsam. Reine Gruß-/Dankeswechsel werden ohne Modellanfrage übersprungen.
+      Verwendet die separaten Extraktionseinstellungen für zusätzliche Anfragen.
       Bei Cloud-Anbietern können Kosten entstehen. Ausgeschaltet bleibt der Chat unverändert nutzbar.</p>
     <p className="muted text-sm mb-4">Standard: persönliche Informationen automatisch, Beziehungen und
       wichtige Zustände nach Bestätigung. Objektive Weltfakten und Orts-/Weltzustände bleiben geschützt.</p>
@@ -199,14 +202,31 @@ export function Events({ worldId, characters, locations, report }: {
         value={filters[key]} onChange={e => { setFilters({ ...filters, [key]: e.target.value }); setPage(0) }} /></Field>)}
     </section>
     {(events.error || jobs.error) && <p role="alert">{errorText(events.error ?? jobs.error)}</p>}
-    {jobs.data?.filter(job => job.status === 'failed').map(job => <div className="error-banner" key={job.id}>
-      <span>Erkennung fehlgeschlagen: {job.error}</span>
+    {jobs.data?.filter(job => job.status === 'failed' || job.attempts > 1 ||
+      job.diagnostics.some(d => d.warning || (d.http_requests ?? 0) > 1)).map(job =>
+      <div className={job.status === 'failed' ? 'error-banner' : 'notice'} key={job.id}>
+      <div><span>{job.status === 'failed' ? `Erkennung fehlgeschlagen: ${job.error}` :
+        job.attempts > 1 ? 'Erkennung nach Wiederholung abgeschlossen' : 'Anbieterhinweis'}</span>
+        <details><summary>Diagnose · {job.attempts} / 3 Versuche</summary>
+          {job.diagnostics.map((diagnosis, index) => <div key={index} className="my-2 text-sm">
+            Versuch {diagnosis.attempt ?? index + 1}
+            {diagnosis.trigger === 'automatic' ? ' (automatische Wiederholung)' : ''}:
+            {' '}{diagnosis.model} · {diagnosis.profile} · Budget {diagnosis.max_output_tokens ?? '—'}
+            {' '}· Ausgabetokens {diagnosis.completion_tokens ?? 'nicht gemeldet'}
+            {' '}· Reasoning {diagnosis.reasoning_tokens ?? 'nicht gemeldet'}
+            {' '}· Abschluss {diagnosis.finish_reason ?? 'nicht gemeldet'}
+            {' '}· HTTP-Anfragen {diagnosis.http_requests ?? 'nicht gemeldet'}
+            {diagnosis.warning && <p>{diagnosis.warning}</p>}
+            {diagnosis.error && <p>{diagnosis.error}</p>}
+          </div>)}
+        </details></div>
+      {job.status === 'failed' && <>
       <button type="button" className="button small" disabled={busy || job.attempts >= 3} onClick={async () => {
         setBusy(true)
         try { await api(`/worlds/${worldId}/extraction-jobs/${job.id}/retry`, 'POST'); await refresh() }
         catch (error) { report(errorText(error)) }
         finally { setBusy(false) }
-      }}>Erneut versuchen</button>
+      }}>Erneut versuchen (zusätzliche Modellanfrage)</button></>}
     </div>)}
     {events.isPending && <p role="status">Ereignisse werden geladen ...</p>}
     <div className="event-layout">

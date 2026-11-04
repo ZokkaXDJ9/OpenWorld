@@ -260,7 +260,36 @@ class ExtractionJob(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
     event_ids: Mapped[list] = mapped_column(JSON, default=list)
+    diagnostics: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ExtractionJobSource(Base):
+    __tablename__ = "extraction_job_sources"
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("extraction_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    message_id: Mapped[str] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+
+
+class ExtractionProviderSettings(Base):
+    __tablename__ = "extraction_provider_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    use_chat_connection: Mapped[bool] = mapped_column(Boolean, default=True)
+    base_url: Mapped[str] = mapped_column(String(2000), default="http://localhost:1234/v1")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    encrypted_key: Mapped[str] = mapped_column(Text, default="")
+    context_window: Mapped[int] = mapped_column(Integer, default=16384)
+    max_output_tokens: Mapped[int] = mapped_column(Integer, default=4096)
+    temperature: Mapped[float] = mapped_column(default=0.0)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
+    provider_profile: Mapped[str] = mapped_column(String(30), default="compatible")
+    reasoning_mode: Mapped[str] = mapped_column(String(20), default="default")
+    structured_output: Mapped[str] = mapped_column(String(20), default="auto")
+    auto_retry: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class EventSettings(Base):
@@ -281,3 +310,5 @@ class ProviderSettings(Base):
     context_window: Mapped[int] = mapped_column(Integer, default=131072)
     max_output_tokens: Mapped[int] = mapped_column(Integer, default=2048)
     temperature: Mapped[float] = mapped_column(default=0.7)
+    reasoning_profile: Mapped[str] = mapped_column(String(30), default="default")
+    reasoning_mode: Mapped[str] = mapped_column(String(20), default="default")

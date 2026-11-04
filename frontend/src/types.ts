@@ -68,6 +68,16 @@ export type ProviderSettings = {
   max_output_tokens: number
   temperature: number
   has_api_key: boolean
+  reasoning_profile: 'default' | 'openai' | 'llama_cpp' | 'lmstudio'
+  reasoning_mode: 'default' | 'off' | 'on' | 'low' | 'medium' | 'high'
+}
+export type ExtractionProviderSettings = Omit<ProviderSettings, 'reasoning_profile' | 'reasoning_mode'> & {
+  use_chat_connection: boolean
+  timeout_seconds: number
+  provider_profile: 'compatible' | 'openai' | 'llama_cpp' | 'ollama' | 'lmstudio'
+  reasoning_mode: 'default' | 'off' | 'on' | 'low' | 'medium' | 'high'
+  structured_output: 'auto' | 'json_schema' | 'json_object' | 'text'
+  auto_retry: boolean
 }
 
 export type EventOperation =
@@ -75,8 +85,10 @@ export type EventOperation =
       content: string; confidence: number; importance?: number; emotion?: string; source?: string
       supersedes?: string[]; contradicts?: string[] }
   | { op: 'state'; entity_type: 'character' | 'world' | 'location'; entity_id: string
-      revision: number; values: Record<string, string | number | boolean | string[]> }
-  | { op: 'relationship'; entity_id: string; revision: number; attributes: Attribute[] }
+      revision: number; values: Record<string, string | number | boolean | string[]>
+      value_quotes?: Record<string, string> }
+  | { op: 'relationship'; entity_id: string; revision: number; target_id?: string | null
+      attribute_quotes?: Record<string, string>; attributes: Attribute[] }
   | { op: 'location'; entity_id: string; revision: number; location_id: string | null
       destination_id: string | null; travel_status: 'present' | 'traveling' | 'unknown' }
   | { op: 'archive'; entity_id: string; revision: number }
@@ -96,6 +108,10 @@ export type WorldEvent = {
 export type ExtractionJob = {
   id: string; conversation_id: string | null; status: string; error: string; attempts: number
   event_ids: string[]
+  diagnostics: { attempt?: number; trigger?: string; status?: string; model?: string; profile?: string
+    max_output_tokens?: number; completion_tokens?: number; reasoning_tokens?: number
+    finish_reason?: string | null; http_requests?: number; error?: string; warning?: string
+    reason?: string }[]
 }
 export type EventSettings = { enabled: boolean; revision: number }
 export type EventRule = {
